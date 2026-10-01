@@ -72,6 +72,14 @@ For the original annotation posted in the Channel, use `/ask` or mention the bot
 
 `/ask` returns the original Channel post/annotation directly; it does not ask Gemini and does not invent a summary. If the matching post contains only author/title/link, those are the fields returned.
 
+The bot also checks the public review index at `https://whispermmepub.github.io/Review/`. For example:
+
+```text
+/ask ပဉ္စလက်ကကြိုး
+```
+
+returns the original review text from the matching review detail page, together with author/title and a button linking to that review. The review index is refreshed at most every 10 minutes and the first lookup may take a few seconds while the detail page is fetched. New Channel text posts and CSV documents continue to be indexed immediately when Telegram delivers them.
+
 Private-channel message links work for channel members. Text posts are indexed as soon as Telegram delivers the update, normally within a few seconds. CSV documents uploaded to the channel are downloaded and imported automatically. The committed seed CSV is loaded during startup, so these books are searchable immediately after the bot starts.
 
 The current GitHub Actions runner has temporary storage. New channel data remains available while that run is active; the committed seed catalog is reloaded after a restart. Persistent additions require a database/host with persistent storage.

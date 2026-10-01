@@ -3,12 +3,16 @@ import csv
 import difflib
 import html
 import io
+import json
 import logging
 import os
 import re
 import secrets
 import sqlite3
+import time
+import urllib.request
 import unicodedata
+from html.parser import HTMLParser
 from collections import defaultdict
 
 from dotenv import load_dotenv
@@ -35,6 +39,7 @@ MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "12"))
 ADMIN_TELEGRAM_ID = int((os.getenv("ADMIN_TELEGRAM_ID", "0") or "0").strip())
 BOOK_DB_PATH = os.getenv("BOOK_DB_PATH", "book_catalog.db")
 BOOK_SEED_PATH = os.getenv("BOOK_SEED_PATH", "data/facebook_ai_books.csv")
+REVIEW_SITE_BASE = "https://whispermmepub.github.io/Review/"
 
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Add it to .env")
@@ -52,6 +57,7 @@ user_history: dict[int, list[types.Content]] = defaultdict(list)
 allowed_user_ids: set[int] = {ADMIN_TELEGRAM_ID} if ADMIN_TELEGRAM_ID else set()
 known_usernames: dict[str, int] = {}
 search_sessions: dict[str, dict[str, str]] = {}
+review_cache: dict[str, object] = {"loaded_at": 0.0, "posts": []}
 
 SYSTEM_INSTRUCTION = (
     "You are a warm, friendly Burmese-speaking female book assistant. "
@@ -174,6 +180,77 @@ def normalize_search_text(value: str) -> str:
     """Ignore Unicode spacing and common punctuation differences during search."""
     value = unicodedata.normalize("NFC", value or "").casefold()
     return re.sub(r"[\s\-–—_.,၊။:;!?()\[\]{}\"'`]+", "", value)
+
+
+class ReviewBodyParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.depth = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "div" and "post-body" in attrs.get("class", "").split():
+            self.depth = 1
+        elif self.depth:
+            self.depth += 1
+
+    def handle_endtag(self, tag):
+        if self.depth:
+            self.depth -= 1
+
+    def handle_data(self, data):
+        if self.depth:
+            clean = data.strip()
+            if clean:
+                self.parts.append(clean)
+
+
+def fetch_url(url: str) -> str:
+    request = urllib.request.Request(url, headers={"User-Agent": "WoW-Book-Finder/1.0"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return response.read().decode("utf-8", errors="replace")
+
+
+def load_review_posts() -> list[dict]:
+    now = time.time()
+    if now - float(review_cache["loaded_at"]) < 600:
+        return review_cache["posts"]  # type: ignore[return-value]
+    try:
+        posts = json.loads(fetch_url(REVIEW_SITE_BASE + "assets/posts.json"))
+        review_cache.update({"loaded_at": now, "posts": posts})
+        return posts
+    except Exception:
+        logger.exception("Unable to load review site index")
+        return []
+
+
+def review_matches(query: str, posts: list[dict]) -> list[tuple[str, str, str, str]]:
+    normalized = normalize_search_text(clean_search_query(query))
+    if not normalized:
+        return []
+    scored = []
+    for post in posts:
+        haystack = normalize_search_text(" ".join(str(post.get(k, "")) for k in ("title", "author", "excerpt")))
+        score = 1.0 if normalized in haystack else difflib.SequenceMatcher(None, normalized, haystack[: max(len(normalized) * 3, 20)]).ratio()
+        if score >= 0.38:
+            scored.append((score, post))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    matches = []
+    for _, post in scored[:10]:
+        try:
+            detail_url = REVIEW_SITE_BASE + post["link"]
+            parser = ReviewBodyParser()
+            parser.feed(fetch_url(detail_url))
+            review_text = "\n".join(parser.parts).strip() or post.get("excerpt", "")
+        except Exception:
+            review_text = post.get("excerpt", "")
+        matches.append((post.get("author", ""), post.get("title", ""), detail_url, review_text))
+    return matches
+
+
+def lookup_reviews(query: str) -> list[tuple[str, str, str, str]]:
+    return review_matches(query, load_review_posts())
 
 
 def clean_search_query(query: str) -> str:
@@ -485,7 +562,8 @@ async def search_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def ask_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     question = " ".join(context.args).strip()
-    results = find_catalog_mentions(question) or search_catalog(question)
+    review_results = await asyncio.to_thread(lookup_reviews, question)
+    results = review_results or find_catalog_mentions(question) or search_catalog(question)
     if not question or not results:
         await reply_with_mention(update, "စာအုပ်နာမည်ပါအောင် မေးပါ။ ဥပမာ /ask စာအုပ်နာမည် အကြောင်းအရာ ဘာလဲ")
         return
@@ -551,7 +629,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     catalog_query = search_query_from_text(prompt, bot_username)
-    mentioned_books = find_catalog_mentions(prompt)
+    mentioned_books = await asyncio.to_thread(lookup_reviews, prompt)
+    mentioned_books = mentioned_books or find_catalog_mentions(prompt)
     if is_book_question(prompt) and mentioned_books:
         try:
             await answer_from_catalog(update, prompt, mentioned_books)
