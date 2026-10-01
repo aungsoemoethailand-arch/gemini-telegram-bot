@@ -14,6 +14,7 @@ import urllib.request
 import unicodedata
 from html.parser import HTMLParser
 from types import SimpleNamespace
+from urllib.error import HTTPError
 from collections import defaultdict
 
 from dotenv import load_dotenv
@@ -580,12 +581,14 @@ async def generate_with_fallback(contents: list[types.Content]):
     except Exception as gemini_error:
         logger.warning("Gemini failed (%s); trying Groq key pool", type(gemini_error).__name__)
         last_error = gemini_error
+        failures = [f"Gemini:{provider_error_label(gemini_error)}"]
         for index, api_key in enumerate(GROQ_API_KEYS, 1):
             try:
                 logger.info("Trying Groq fallback key slot %s/%s", index, len(GROQ_API_KEYS))
                 return await asyncio.to_thread(groq_generate, api_key, contents)
             except Exception as groq_error:
                 last_error = groq_error
+                failures.append(f"Groq{index}:{provider_error_label(groq_error)}")
                 logger.warning("Groq key slot %s failed: %s", index, type(groq_error).__name__)
         if OPENAI_API_KEY:
             try:
@@ -593,8 +596,20 @@ async def generate_with_fallback(contents: list[types.Content]):
                 return await asyncio.to_thread(openai_generate, contents)
             except Exception as openai_error:
                 last_error = openai_error
+                failures.append(f"OpenAI:{provider_error_label(openai_error)}")
                 logger.warning("OpenAI fallback failed: %s", type(openai_error).__name__)
+        setattr(last_error, "provider_failures", ", ".join(failures))
         raise last_error
+
+
+def provider_error_label(error: Exception) -> str:
+    if isinstance(error, HTTPError):
+        return f"HTTP {error.code}"
+    text = str(error)
+    for marker in ("401", "403", "429", "500", "502", "503"):
+        if marker in text:
+            return marker
+    return type(error).__name__
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -825,9 +840,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if GROQ_API_KEYS or OPENAI_API_KEY
             else "Gemini quota ပြည့်နေပါတယ်။ Groq သို့မဟုတ် OpenAI fallback key ထည့်ပြီးရင် အလိုအလျောက် ပြောင်းဖြေပါမယ်။"
         )
+        failure_details = getattr(exc, "provider_failures", "")
         await reply_with_mention(
             update,
-            f"တောင်းပန်ပါတယ်ရှင်။ {provider_status}\nခဏနောက် ပြန်မေးကြည့်ပါနော်။"
+            f"တောင်းပန်ပါတယ်ရှင်။ {provider_status}\n"
+            f"စစ်ဆေးချက်: {failure_details or provider_error_label(exc)}\n"
+            "API key/quota setting ကို ပြန်စစ်ပေးပါနော်။"
         )
 
 
