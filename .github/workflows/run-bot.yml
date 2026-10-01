@@ -40,7 +40,11 @@ jobs:
         run: |
           test -n "$TELEGRAM_BOT_TOKEN" || { echo "TELEGRAM_BOT_TOKEN is missing"; exit 1; }
           test -n "$GEMINI_API_KEY" || { echo "GEMINI_API_KEY is missing"; exit 1; }
-          echo "Telegram and Gemini secrets are configured."
+          test -n "$ADMIN_TELEGRAM_ID" || { echo "ADMIN_TELEGRAM_ID is missing; add it as a repository secret"; exit 1; }
+          case "$ADMIN_TELEGRAM_ID" in
+            *[!0-9]*) echo "ADMIN_TELEGRAM_ID must contain digits only"; exit 1 ;;
+          esac
+          echo "Telegram, Gemini, and admin secrets are configured."
 
       - name: Start bot
         run: python bot.py
