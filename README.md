@@ -41,11 +41,13 @@ The bot uses polling, so it is suitable for local testing. Use `/start` to begin
 
 The current UI trial adds a friendly welcome menu with `📚 စာအုပ်ရှာမယ်`, `📝 အညွှန်းဖတ်မယ်`, and `❓ အသုံးပြုပုံ` buttons, plus `/help`. This is a single reversible commit so it can be rolled back if the style is not preferred.
 
-## AI fallback
+## AI fallback (temporarily paused)
 
 For normal AI questions, the bot uses this automatic order: **Gemini → Groq key pool → OpenAI → DeepSeek → OpenRouter free router**. If a provider returns a quota/rate-limit, capacity, or model error, it moves to the next configured provider. The Groq fallback uses `llama-3.1-8b-instant` by default. Add optional GitHub repository secrets named `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, and `OPENROUTER_API_KEY`. OpenRouter uses `openrouter/free` by default, which selects an available free model; free routers can still have temporary limits.
 
 Quota errors now skip Gemini's long retry delay and move to the next provider immediately; temporary 503 errors get only one short retry. Provider HTTP timeouts are capped at 15 seconds to keep replies responsive.
+
+General AI question answering is currently paused to prioritize fast and reliable book search and annotation lookup. `/search`, `/ask`, channel indexing, public review lookup, pagination, and book-link buttons remain enabled. AI fallback code is retained so it can be enabled again later.
 
 Add one or more Groq secrets named `GROQ_API_KEY`, `GROQ_API_KEY_2`, `GROQ_API_KEY_3`, and so on up to `_10`. The bot uses them in numeric order and automatically tries the next key if a Groq key fails. Use underscores only; names such as `GROQ_API_KEY-3,4` are not supported. Leaving optional fallback secrets empty simply skips that provider.
 
@@ -72,7 +74,7 @@ In groups, authorized users can search in any of these ways:
 /စာအုပ်နာမည်
 ```
 
-The bot searches the channel catalog first, and replies by mentioning the user who asked. If an `@YourBot ...` query has no catalog match, it is handled as a normal Gemini question.
+The bot searches the channel catalog first, and replies by mentioning the user who asked. If an `@YourBot ...` query has no catalog match, it returns a short book-search usage message while general AI mode is paused.
 
 Channel posts support two separate modes:
 

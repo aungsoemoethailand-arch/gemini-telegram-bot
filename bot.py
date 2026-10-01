@@ -916,7 +916,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     catalog_query = search_query_from_text(prompt, bot_username)
     local_reviews = find_local_reviews(prompt)
-    mentioned_books = local_reviews or await asyncio.to_thread(lookup_reviews, prompt)
+    mentioned_books = local_reviews
+    if not mentioned_books and is_book_question(prompt):
+        mentioned_books = await asyncio.to_thread(lookup_reviews, prompt)
     mentioned_books = mentioned_books or find_catalog_mentions(prompt)
     if is_book_question(prompt) and mentioned_books:
         try:
@@ -934,38 +936,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await send_search_results(update, catalog_results, search_query=catalog_query)
         return
 
-    history = user_history[user_id]
-    history.append(types.Content(role="user", parts=[types.Part(text=prompt)]))
-    history[:] = history[-MAX_HISTORY_MESSAGES:]
-
-    await update.message.chat.send_action(ChatAction.TYPING)
-    try:
-        response = await generate_with_fallback(history)
-        answer = (response.text or "ပြန်လည်ဖြေကြားချက် မရရှိပါ။").strip()
-        history.append(types.Content(role="model", parts=[types.Part(text=answer)]))
-        history[:] = history[-MAX_HISTORY_MESSAGES:]
-        for index, chunk in enumerate(split_message(answer)):
-            if index == 0:
-                await reply_with_mention(update, chunk)
-            else:
-                await update.message.reply_text(chunk)
-    except Exception as exc:
-        logger.exception("Gemini request failed for user %s", user_id)
-        # Remove the failed prompt so a transient error does not corrupt context.
-        if history and history[-1].role == "user":
-            history.pop()
-        provider_status = (
-            "Gemini quota ပြည့်နေပြီး Groq/OpenAI fallback တွေလည်း မရသေးပါ။"
-            if GROQ_API_KEYS or OPENAI_API_KEY
-            else "Gemini quota ပြည့်နေပါတယ်။ Groq သို့မဟုတ် OpenAI fallback key ထည့်ပြီးရင် အလိုအလျောက် ပြောင်းဖြေပါမယ်။"
-        )
-        failure_details = getattr(exc, "provider_failures", "")
-        await reply_with_mention(
-            update,
-            f"တောင်းပန်ပါတယ်ရှင်။ {provider_status}\n"
-            f"စစ်ဆေးချက်: {failure_details or provider_error_label(exc)}\n"
-            "API key/quota setting ကို ပြန်စစ်ပေးပါနော်။"
-        )
+    # AI general Q&A is intentionally paused for now. Keep this handler focused
+    # on fast book search/review lookups until AI is explicitly enabled again.
+    await reply_with_mention(
+        update,
+        "လောလောဆယ် စာအုပ်ရှာဖွေခြင်းနဲ့ စာအုပ်အညွှန်းကိုပဲ အမြန်ဆုံး ကူညီပေးနေပါတယ်ရှင်။\n"
+        "/search စာအုပ်နာမည် သို့မဟုတ် /ask စာအုပ်နာမည် လို့ မေးနိုင်ပါတယ်။",
+    )
 
 
 def main() -> None:
