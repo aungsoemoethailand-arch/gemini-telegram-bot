@@ -1,10 +1,12 @@
 import asyncio
 import csv
+import difflib
 import html
 import io
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import unicodedata
 from collections import defaultdict
@@ -17,6 +19,7 @@ from telegram.constants import ChatAction, ChatType
 from telegram.helpers import mention_html
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -48,6 +51,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 user_history: dict[int, list[types.Content]] = defaultdict(list)
 allowed_user_ids: set[int] = {ADMIN_TELEGRAM_ID} if ADMIN_TELEGRAM_ID else set()
 known_usernames: dict[str, int] = {}
+search_sessions: dict[str, dict[str, str]] = {}
 
 SYSTEM_INSTRUCTION = (
     "You are a warm, friendly Burmese-speaking female book assistant. "
@@ -172,7 +176,13 @@ def normalize_search_text(value: str) -> str:
     return re.sub(r"[\s\-–—_.,၊။:;!?()\[\]{}\"'`]+", "", value)
 
 
-def search_catalog(query: str, limit: int = 10) -> list[tuple[str, str, str, str]]:
+def clean_search_query(query: str) -> str:
+    query = re.sub(r"(?:စာအုပ်တွေ|စာအုပ်များ|စာအုပ်|စာရင်း|ရှာပေးပါ|ရှာပေး|ရှာ)$", "", query.strip())
+    return query.strip()
+
+
+def search_catalog(query: str, limit: int | None = 10) -> list[tuple[str, str, str, str]]:
+    query = clean_search_query(query)
     normalized_query = normalize_search_text(query)
     if not normalized_query:
         return []
@@ -182,13 +192,26 @@ def search_catalog(query: str, limit: int = 10) -> list[tuple[str, str, str, str
             "SELECT author, title, link, raw_text FROM books ORDER BY id DESC"
         ).fetchall()
     matches = []
+    approximate = []
     for row in rows:
         haystack = normalize_search_text(" ".join(row))
         if normalized_query in haystack or all(part in haystack for part in query_parts):
             matches.append(row)
-            if len(matches) >= limit:
+            if limit is not None and len(matches) >= limit:
                 break
-    return matches
+    if matches:
+        return matches
+    if len(normalized_query) < 3:
+        return []
+    for row in rows:
+        author, title, link, raw_text = row
+        candidates = [normalize_search_text(author), normalize_search_text(title)]
+        score = max(difflib.SequenceMatcher(None, normalized_query, candidate).ratio() for candidate in candidates if candidate)
+        if score >= 0.55:
+            approximate.append((score, row))
+    approximate.sort(key=lambda item: item[0], reverse=True)
+    result = [row for _, row in approximate]
+    return result if limit is None else result[:limit]
 
 
 def find_catalog_mentions(text: str, limit: int = 5) -> list[tuple[str, str, str, str]]:
@@ -251,21 +274,58 @@ def search_query_from_text(text: str, bot_username: str = "") -> str:
     return query.strip(" \t:၊,။")
 
 
-async def send_search_results(update: Update, results: list[tuple[str, str, str, str]]) -> None:
-    lines = [f"<b>📚 ရှာဖွေမှုရလဒ် ({len(results)} ခု)</b>"]
+async def send_search_results(
+    update: Update,
+    results: list[tuple[str, str, str, str]],
+    page: int = 0,
+    search_query: str = "",
+    session_token: str | None = None,
+) -> None:
+    page_size = 10
+    page_count = max(1, (len(results) + page_size - 1) // page_size)
+    page = max(0, min(page, page_count - 1))
+    visible = results[page * page_size : (page + 1) * page_size]
+    if search_query and session_token is None:
+        session_token = secrets.token_urlsafe(6)
+        search_sessions[session_token] = {
+            "query": search_query,
+            "mention": requester_mention(update),
+        }
+    lines = [f"<b>📚 ရှာဖွေမှုရလဒ် ({len(results)} ခု)</b>", f"စာမျက်နှာ {page + 1}/{page_count}"]
     buttons = []
-    for index, (author, title, link, raw_text) in enumerate(results, 1):
+    for index, (author, title, link, raw_text) in enumerate(visible, page * page_size + 1):
         display_title = title or raw_text.splitlines()[0][:120]
         lines.append(f"\n<b>{index}. {html.escape(display_title)}</b>")
         if author:
             lines.append(f"စာရေးသူ: {html.escape(author)}")
         if link:
             buttons.append([InlineKeyboardButton(f"🔗 {index} စာအုပ်လင့် ဖွင့်ရန်", url=link)])
-    await update.message.reply_text(
-        f"{requester_mention(update)} " + "\n".join(lines),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
-    )
+    if session_token and page > 0:
+        buttons.append([InlineKeyboardButton("⬅️ နောက်ပြန်", callback_data=f"bookpage:{session_token}:{page - 1}")])
+    if session_token and page < page_count - 1:
+        buttons.append([InlineKeyboardButton("ရှေ့ဆက် ➡️", callback_data=f"bookpage:{session_token}:{page + 1}")])
+    markup = InlineKeyboardMarkup(buttons) if buttons else None
+    text = f"{search_sessions.get(session_token, {}).get('mention', requester_mention(update))} " + "\n".join(lines)
+    if update.callback_query:
+        await update.callback_query.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+async def handle_search_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    try:
+        _, token, page_text = query.data.split(":", 2)
+        page = int(page_text)
+        session = search_sessions.get(token)
+        if not session:
+            await query.answer("ဒီရှာဖွေမှု session သက်တမ်းကုန်သွားပါပြီ။ ပြန်ရှာပါ။", show_alert=True)
+            return
+        results = search_catalog(session["query"], limit=None)
+        await send_search_results(update, results, page=page, search_query=session["query"], session_token=token)
+    except (ValueError, IndexError):
+        await query.answer("ရှာဖွေမှု page မမှန်ပါ။", show_alert=True)
 
 
 async def answer_from_catalog(update: Update, question: str, results: list[tuple[str, str, str, str]]) -> None:
@@ -418,11 +478,11 @@ async def search_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not query:
         await update.message.reply_text("သုံးပုံ: /search စာရေးသူ သို့မဟုတ် စာအုပ်နာမည်")
         return
-    results = search_catalog(query)
+    results = search_catalog(query, limit=None)
     if not results:
         await reply_with_mention(update, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။")
         return
-    await send_search_results(update, results)
+    await send_search_results(update, results, search_query=query)
 
 
 async def ask_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -445,9 +505,9 @@ async def short_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not query:
         await reply_with_mention(update, "သုံးပုံ: /စာရေးသူ သို့မဟုတ် /စာအုပ်နာမည်")
         return
-    results = search_catalog(query)
+    results = search_catalog(query, limit=None)
     if results:
-        await send_search_results(update, results)
+        await send_search_results(update, results, search_query=query)
     else:
         await reply_with_mention(update, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။")
 
@@ -498,9 +558,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.exception("Catalog answer failed for user %s", user_id)
             await reply_with_mention(update, f"အညွှန်းကို ဖြေရာမှာ အခက်အခဲရှိပါတယ်: {type(exc).__name__}")
         return
-    catalog_results = search_catalog(catalog_query) if catalog_query else []
+    catalog_results = search_catalog(catalog_query, limit=None) if catalog_query else []
     if catalog_results:
-        await send_search_results(update, catalog_results)
+        await send_search_results(update, catalog_results, search_query=catalog_query)
         return
 
     history = user_history[user_id]
@@ -539,6 +599,7 @@ def main() -> None:
     application.add_handler(CommandHandler("myid", my_id))
     application.add_handler(CommandHandler("search", search_books))
     application.add_handler(CommandHandler("ask", ask_books))
+    application.add_handler(CallbackQueryHandler(handle_search_page, pattern=r"^bookpage:"))
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POSTS, handle_channel_post))
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(
