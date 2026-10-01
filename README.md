@@ -38,6 +38,8 @@ The bot uses polling, so it is suitable for local testing. Use `/start` to begin
 - Search is Unicode-normalized and ignores extra/missing spaces and common punctuation differences.
 - Large result sets show 10 books per page with Previous/Next buttons; approximate spelling matches are returned when an exact match is not found.
 
+The current UI trial adds a friendly welcome menu with `📚 စာအုပ်ရှာမယ်`, `📝 အညွှန်းဖတ်မယ်`, and `❓ အသုံးပြုပုံ` buttons, plus `/help`. This is a single reversible commit so it can be rolled back if the style is not preferred.
+
 ## Uptime
 
 The current deployment uses GitHub Actions. A run can stay alive for up to 350 minutes, and a scheduled workflow attempts to restart it every 5 hours. This is not a guaranteed 24/7 service: GitHub runner startup delays, cancellation delays, or quota limits can create downtime. For reliable always-on operation, move the bot to a persistent VPS or hosting service.

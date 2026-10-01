@@ -506,12 +506,38 @@ async def generate_with_retry(contents: list[types.Content]):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "မင်္ဂလာပါရှင်။ 📚\n"
-        "စာအုပ်ရှာပေးတာ၊ စာအုပ်အညွှန်းပြောပြတာနဲ့ Gemini AI မေးခွန်းတွေကို ကူညီပေးနိုင်ပါတယ်။\n\n"
-        "• /search စာအုပ်နာမည်\n"
-        "• /ask စာအုပ်နာမည် အကြောင်းအရာပြောပါ\n"
-        "• စကားဝိုင်းအသစ်စရန် /reset"
+        "<b>မင်္ဂလာပါရှင် 📚✨</b>\n\n"
+        "စာအုပ်ရှာပေးတာ၊ မူရင်းအညွှန်းဖတ်ပေးတာနဲ့ AI မေးခွန်းတွေကို ကူညီပေးပါမယ်နော် 💜\n\n"
+        "အောက်က menu ကနေ ရွေးနိုင်ပါတယ်ရှင်။",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📚 စာအုပ်ရှာမယ်", callback_data="menu:search"),
+             InlineKeyboardButton("📝 အညွှန်းဖတ်မယ်", callback_data="menu:ask")],
+            [InlineKeyboardButton("❓ အသုံးပြုပုံ", callback_data="menu:help")],
+        ]),
     )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "<b>📚 အသုံးပြုပုံလေးပါရှင်</b>\n\n"
+        "<b>စာအုပ် link ရှာရန်</b>\n/search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ\n\n"
+        "<b>မူရင်းအညွှန်းဖတ်ရန်</b>\n/ask စာအုပ်နာမည်\n\n"
+        "Group ထဲမှာတော့ @YourBot နဲ့ mention လုပ်ပြီး မေးလို့ရပါတယ်ရှင် 💜",
+        parse_mode="HTML",
+    )
+
+
+async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    action = query.data.split(":", 1)[1]
+    messages = {
+        "search": "📚 <b>စာအုပ်ရှာမယ်</b>\n\n/search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ လို့ ရိုက်ပို့ပါရှင်။",
+        "ask": "📝 <b>မူရင်းအညွှန်းဖတ်မယ်</b>\n\n/ask စာအုပ်နာမည် လို့ ရိုက်ပို့ပါရှင်။ Channel ထဲက အညွှန်းစာသားကို တိုက်ရိုက်ပြပေးပါမယ်။",
+        "help": "❓ <b>အကူအညီ</b>\n\n/search နဲ့ စာအုပ်ရှာပါ။\n/ask နဲ့ မူရင်းအညွှန်းဖတ်ပါ။\n/reset နဲ့ စကားဝိုင်းအသစ်စပါ။",
+    }
+    await query.message.reply_text(messages.get(action, messages["help"]), parse_mode="HTML")
 
 
 async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -714,15 +740,17 @@ def main() -> None:
     logger.info("Loaded %s seed catalog records", load_seed_catalog())
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("myid", my_id))
     application.add_handler(CommandHandler("search", search_books))
     application.add_handler(CommandHandler("ask", ask_books))
     application.add_handler(CallbackQueryHandler(handle_search_page, pattern=r"^bookpage:"))
+    application.add_handler(CallbackQueryHandler(handle_menu, pattern=r"^menu:"))
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POSTS, handle_channel_post))
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(
         MessageHandler(
-            filters.TEXT & filters.Regex(r"^/(?!start\b|myid\b|allow\b|remove\b|search\b|ask\b|reset\b)\S+.*$"),
+            filters.TEXT & filters.Regex(r"^/(?!start\b|help\b|myid\b|allow\b|remove\b|search\b|ask\b|reset\b)\S+.*$"),
             short_search,
         )
     )
