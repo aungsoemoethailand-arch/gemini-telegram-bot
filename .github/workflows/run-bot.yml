@@ -40,8 +40,7 @@ jobs:
         run: |
           test -n "$TELEGRAM_BOT_TOKEN" || { echo "TELEGRAM_BOT_TOKEN is missing"; exit 1; }
           test -n "$GEMINI_API_KEY" || { echo "GEMINI_API_KEY is missing"; exit 1; }
-          test -n "$ADMIN_TELEGRAM_ID" || { echo "ADMIN_TELEGRAM_ID is missing"; exit 1; }
-          echo "Required secrets are configured."
+          echo "Telegram and Gemini secrets are configured."
 
       - name: Start bot
         run: python bot.py
