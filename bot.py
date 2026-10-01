@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from collections import defaultdict
@@ -58,6 +59,37 @@ def split_message(text: str, limit: int = 4096) -> list[str]:
     return chunks
 
 
+async def generate_with_retry(contents: list[types.Content]):
+    """Retry temporary Gemini capacity/rate-limit failures before giving up."""
+    for attempt in range(3):
+        try:
+            return await asyncio.to_thread(
+                client.models.generate_content,
+                model=GEMINI_MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.7,
+                ),
+            )
+        except Exception as exc:
+            error_text = str(exc)
+            transient = any(
+                marker in error_text
+                for marker in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")
+            )
+            if not transient or attempt == 2:
+                raise
+            delay = 3 * (2**attempt)
+            logger.warning(
+                "Temporary Gemini failure; retrying in %ss (attempt %s/3): %s",
+                delay,
+                attempt + 1,
+                type(exc).__name__,
+            )
+            await asyncio.sleep(delay)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "မင်္ဂလာပါ။ Gemini AI Bot ဖြစ်ပါတယ်။\n"
@@ -85,14 +117,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await update.message.chat.send_action(ChatAction.TYPING)
     try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=history,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                temperature=0.7,
-            ),
-        )
+        response = await generate_with_retry(history)
         answer = (response.text or "ပြန်လည်ဖြေကြားချက် မရရှိပါ။").strip()
         history.append(types.Content(role="model", parts=[types.Part(text=answer)]))
         history[:] = history[-MAX_HISTORY_MESSAGES:]

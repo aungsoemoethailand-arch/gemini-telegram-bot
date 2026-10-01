@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: telegram-gemini-bot
+  cancel-in-progress: true
+
 jobs:
   bot:
     runs-on: ubuntu-latest
