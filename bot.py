@@ -401,14 +401,18 @@ def search_catalog(query: str, limit: int | None = 10) -> list[tuple[str, str, s
     query_parts = [normalize_search_text(word) for word in re.split(r"\s+", query) if word]
     with sqlite3.connect(BOOK_DB_PATH) as db:
         rows = db.execute(
-            "SELECT author, title, link, raw_text FROM books ORDER BY id DESC"
+            "SELECT chat_id, author, title, link, raw_text FROM books ORDER BY id DESC"
         ).fetchall()
     matches = []
     approximate = []
     for row in rows:
-        haystack = normalize_search_text(" ".join(row))
+        chat_id, author, title, link, raw_text = row
+        if is_review_record(chat_id, author, title, link, raw_text):
+            continue
+        visible_row = (author, title, link, raw_text)
+        haystack = normalize_search_text(" ".join(visible_row))
         if normalized_query in haystack or all(part in haystack for part in query_parts):
-            matches.append(row)
+            matches.append(visible_row)
             if limit is not None and len(matches) >= limit:
                 break
     if matches:
@@ -416,11 +420,13 @@ def search_catalog(query: str, limit: int | None = 10) -> list[tuple[str, str, s
     if len(normalized_query) < 3:
         return []
     for row in rows:
-        author, title, link, raw_text = row
+        chat_id, author, title, link, raw_text = row
+        if is_review_record(chat_id, author, title, link, raw_text):
+            continue
         candidates = [normalize_search_text(author), normalize_search_text(title)]
         score = max(difflib.SequenceMatcher(None, normalized_query, candidate).ratio() for candidate in candidates if candidate)
         if score >= 0.55:
-            approximate.append((score, row))
+            approximate.append((score, (author, title, link, raw_text)))
     approximate.sort(key=lambda item: item[0], reverse=True)
     result = [row for _, row in approximate]
     return result if limit is None else result[:limit]
@@ -450,6 +456,14 @@ def find_catalog_mentions(text: str, limit: int = 5) -> list[tuple[str, str, str
 def find_local_reviews(query: str) -> list[tuple[str, str, str, str]]:
     matches = find_catalog_mentions(query, limit=10)
     return [row for row in matches if "#bookreview" in row[3].casefold() or len(row[3]) > len(" - ".join(row[:3])) + 80]
+
+
+def is_review_record(chat_id: int, author: str, title: str, link: str, raw_text: str) -> bool:
+    """Identify annotation rows so ordinary link search never mixes in reviews."""
+    if chat_id == -2000000001:
+        return True
+    metadata = " - ".join(value for value in (author, title, link) if value)
+    return "#bookreview" in raw_text.casefold() or len(raw_text) > len(metadata) + 80
 
 
 def is_book_question(text: str) -> bool:

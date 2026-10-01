@@ -38,6 +38,7 @@ The bot uses polling, so it is suitable for local testing. Use `/start` to begin
 - In DM, a plain book title or author can be sent without `/search`.
 - In groups, a plain book title or author also searches the catalog without `/search`; the bot replies only when a match is found.
 - Annotation lookup remains `/ask စာအုပ်နာမည်` in both DM and groups.
+- `/search` and plain title/author searches show book-link records only; review/annotation records are intentionally excluded and appear only through `/ask`.
 - Search replies use bold titles, a friendly assistant tone, and tappable book-link buttons.
 - Search is Unicode-normalized and ignores extra/missing spaces and common punctuation differences.
 - Large result sets show 10 books per page with Previous/Next buttons; approximate spelling matches are returned when an exact match is not found.
