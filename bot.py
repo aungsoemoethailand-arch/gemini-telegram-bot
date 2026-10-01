@@ -13,6 +13,7 @@ import time
 import urllib.request
 import unicodedata
 from html.parser import HTMLParser
+from types import SimpleNamespace
 from collections import defaultdict
 
 from dotenv import load_dotenv
@@ -35,6 +36,8 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "12"))
 ADMIN_TELEGRAM_ID = int((os.getenv("ADMIN_TELEGRAM_ID", "0") or "0").strip())
 BOOK_DB_PATH = os.getenv("BOOK_DB_PATH", "book_catalog.db")
@@ -504,6 +507,43 @@ async def generate_with_retry(contents: list[types.Content]):
             await asyncio.sleep(delay)
 
 
+def groq_generate(contents: list[types.Content]):
+    messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
+    for content in contents:
+        text = "\n".join(part.text for part in (content.parts or []) if part.text)
+        if text:
+            messages.append({"role": "assistant" if content.role == "model" else "user", "content": text})
+    payload = json.dumps({
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "temperature": 0.7,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+            "User-Agent": "WoW-Book-Finder/1.0",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=45) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    text = data["choices"][0]["message"]["content"]
+    return SimpleNamespace(text=text)
+
+
+async def generate_with_fallback(contents: list[types.Content]):
+    try:
+        return await generate_with_retry(contents)
+    except Exception as gemini_error:
+        if not GROQ_API_KEY:
+            raise
+        logger.warning("Gemini failed (%s); trying Groq fallback", type(gemini_error).__name__)
+        return await asyncio.to_thread(groq_generate, contents)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "<b>မင်္ဂလာပါရှင် 📚✨</b>\n\n"
@@ -713,7 +753,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await update.message.chat.send_action(ChatAction.TYPING)
     try:
-        response = await generate_with_retry(history)
+        response = await generate_with_fallback(history)
         answer = (response.text or "ပြန်လည်ဖြေကြားချက် မရရှိပါ။").strip()
         history.append(types.Content(role="model", parts=[types.Part(text=answer)]))
         history[:] = history[-MAX_HISTORY_MESSAGES:]
@@ -727,11 +767,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Remove the failed prompt so a transient error does not corrupt context.
         if history and history[-1].role == "user":
             history.pop()
-        error_detail = str(exc).replace(GEMINI_API_KEY, "[REDACTED]")
+        provider_status = "Gemini quota ပြည့်နေပြီး Groq fallback လည်း မရသေးပါ။" if GROQ_API_KEY else "Gemini quota ပြည့်နေပါတယ်။ Groq fallback key ထည့်ပြီးရင် အလိုအလျောက် ပြောင်းဖြေပါမယ်။"
         await reply_with_mention(
             update,
-            "တောင်းပန်ပါတယ်။ Gemini API ချိတ်ဆက်ရာမှာ အခက်အခဲရှိနေပါတယ်။\n"
-            f"အကြောင်းရင်း: {type(exc).__name__}: {error_detail[:300]}"
+            f"တောင်းပန်ပါတယ်ရှင်။ {provider_status}\nခဏနောက် ပြန်မေးကြည့်ပါနော်။"
         )
 
 

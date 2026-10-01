@@ -20,6 +20,7 @@ Edit `.env` and set:
 
 - `TELEGRAM_BOT_TOKEN`: a newly generated token from `@BotFather`
 - `GEMINI_API_KEY`: a key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+- `GROQ_API_KEY`: optional fallback key from [Groq Console](https://console.groq.com/keys)
 
 ## Run
 
@@ -39,6 +40,10 @@ The bot uses polling, so it is suitable for local testing. Use `/start` to begin
 - Large result sets show 10 books per page with Previous/Next buttons; approximate spelling matches are returned when an exact match is not found.
 
 The current UI trial adds a friendly welcome menu with `📚 စာအုပ်ရှာမယ်`, `📝 အညွှန်းဖတ်မယ်`, and `❓ အသုံးပြုပုံ` buttons, plus `/help`. This is a single reversible commit so it can be rolled back if the style is not preferred.
+
+## AI fallback
+
+For normal AI questions, the bot tries Gemini first. If Gemini returns a quota/rate-limit or temporary capacity error, it automatically tries Groq using `GROQ_API_KEY`. Add a GitHub repository secret named `GROQ_API_KEY`; leaving it empty keeps Gemini-only behavior.
 
 ## Uptime
 
