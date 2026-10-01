@@ -330,26 +330,22 @@ async def handle_search_page(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def answer_from_catalog(update: Update, question: str, results: list[tuple[str, str, str, str]]) -> None:
-    context = "\n\n".join(
-        f"စာရေးသူ: {author}\nစာအုပ်: {title}\nLink: {link}\nChannel အညွှန်း/post: {raw_text[:3500]}"
-        for author, title, link, raw_text in results
+    lines = ["<b>📖 Channel ထဲက မူရင်းအညွှန်း</b>"]
+    buttons = []
+    for author, title, link, raw_text in results[:5]:
+        display_title = title or "စာအုပ်အမည် မသိရသေးပါ"
+        lines.append(f"\n<b>{html.escape(display_title)}</b>")
+        if author:
+            lines.append(f"စာရေးသူ: {html.escape(author)}")
+        lines.append(html.escape(raw_text[:3500]))
+        if link:
+            button_title = re.sub(r"\s+", " ", display_title).strip()[:48]
+            buttons.append([InlineKeyboardButton(f"📖 {button_title}", url=link)])
+    await update.message.reply_text(
+        f"{requester_mention(update)} " + "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
     )
-    prompt = (
-        "Answer the user's question using only the channel catalog context below. "
-        "Respond in the user's language. If the context does not contain the answer, say so clearly; "
-        "do not invent book details.\n\n"
-        f"Catalog context:\n{context}\n\nUser question: {question}"
-    )
-    await update.message.chat.send_action(ChatAction.TYPING)
-    response = await generate_with_retry([
-        types.Content(role="user", parts=[types.Part(text=prompt)])
-    ])
-    answer = (response.text or "ဒီစာအုပ်အတွက် အညွှန်းအချက်အလက် မလုံလောက်ပါ။").strip()
-    for index, chunk in enumerate(split_message(answer)):
-        if index == 0:
-            await reply_with_mention(update, chunk)
-        else:
-            await update.message.reply_text(chunk)
 
 
 def split_message(text: str, limit: int = 4096) -> list[str]:
@@ -499,7 +495,7 @@ async def ask_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Catalog answer failed for user %s", user_id)
         await reply_with_mention(
             update,
-            "အညွှန်းကို Gemini နဲ့ ဖြေရာမှာ ယာယီအခက်အခဲရှိလို့ catalog ထဲက စာအုပ်အချက်အလက်ကို ပြပေးထားပါတယ်ရှင်။"
+            "Channel အညွှန်းကို ဖတ်ရာမှာ ယာယီအခက်အခဲရှိလို့ စာအုပ်အချက်အလက်ကို ပြပေးထားပါတယ်ရှင်။"
         )
         await send_search_results(update, results, search_query=question)
 
@@ -563,7 +559,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.exception("Catalog answer failed for user %s", user_id)
             await reply_with_mention(
                 update,
-                "အညွှန်းကို Gemini နဲ့ ဖြေရာမှာ ယာယီအခက်အခဲရှိလို့ catalog ထဲက စာအုပ်အချက်အလက်ကို ပြပေးထားပါတယ်ရှင်။"
+                "Channel အညွှန်းကို ဖတ်ရာမှာ ယာယီအခက်အခဲရှိလို့ စာအုပ်အချက်အလက်ကို ပြပေးထားပါတယ်ရှင်။"
             )
             await send_search_results(update, mentioned_books, search_query=prompt)
         return

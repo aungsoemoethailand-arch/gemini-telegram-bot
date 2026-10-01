@@ -63,14 +63,14 @@ In groups, authorized users can search in any of these ways:
 
 The bot searches the channel catalog first, and replies by mentioning the user who asked. If an `@YourBot ...` query has no catalog match, it is handled as a normal Gemini question.
 
-For a description/summary question, use `/ask` or mention the bot with the book name and question:
+For the original annotation posted in the Channel, use `/ask` or mention the bot with the book name:
 
 ```text
 /ask စာကျက်ချင်စိတ် ဒီစာအုပ်အကြောင်း အညွှန်းပြောပါ
 @YourBot စာကျက်ချင်စိတ် ဒီစာအုပ်အကြောင်း ဘာလဲ
 ```
 
-The answer is grounded in the matching channel post text. If the channel post contains only author/title/link, the bot can only report those fields and will say when there is not enough description to answer.
+`/ask` returns the original Channel post/annotation directly; it does not ask Gemini and does not invent a summary. If the matching post contains only author/title/link, those are the fields returned.
 
 Private-channel message links work for channel members. Text posts are indexed as soon as Telegram delivers the update, normally within a few seconds. CSV documents uploaded to the channel are downloaded and imported automatically. The committed seed CSV is loaded during startup, so these books are searchable immediately after the bot starts.
 
