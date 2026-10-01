@@ -35,6 +35,7 @@ The bot uses polling, so it is suitable for local testing. Use `/start` to begin
 - In groups, the bot replies only when mentioned, for example: `@YourBot မင်္ဂလာပါ`.
 - `/search`, `/ask`, and slash-title shortcuts are available to everyone in groups when sent as commands.
 - Search replies use bold titles, a friendly assistant tone, and tappable book-link buttons.
+- Search is Unicode-normalized and ignores extra/missing spaces and common punctuation differences.
 
 ## Uptime
 

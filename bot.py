@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import sqlite3
+import unicodedata
 from collections import defaultdict
 
 from dotenv import load_dotenv
@@ -165,27 +166,34 @@ def load_seed_catalog() -> int:
     return len(records)
 
 
+def normalize_search_text(value: str) -> str:
+    """Ignore Unicode spacing and common punctuation differences during search."""
+    value = unicodedata.normalize("NFC", value or "").casefold()
+    return re.sub(r"[\s\-–—_.,၊။:;!?()\[\]{}\"'`]+", "", value)
+
+
 def search_catalog(query: str, limit: int = 10) -> list[tuple[str, str, str, str]]:
-    words = [word for word in re.split(r"\s+", query.strip()) if word]
-    if not words:
+    normalized_query = normalize_search_text(query)
+    if not normalized_query:
         return []
-    clauses = []
-    params: list[str] = []
-    for word in words:
-        pattern = f"%{word}%"
-        clauses.append("(author LIKE ? OR title LIKE ? OR raw_text LIKE ?)")
-        params.extend([pattern, pattern, pattern])
+    query_parts = [normalize_search_text(word) for word in re.split(r"\s+", query) if word]
     with sqlite3.connect(BOOK_DB_PATH) as db:
-        return db.execute(
-            f"SELECT author, title, link, raw_text FROM books WHERE {' AND '.join(clauses)} "
-            "ORDER BY id DESC LIMIT ?",
-            (*params, limit),
+        rows = db.execute(
+            "SELECT author, title, link, raw_text FROM books ORDER BY id DESC"
         ).fetchall()
+    matches = []
+    for row in rows:
+        haystack = normalize_search_text(" ".join(row))
+        if normalized_query in haystack or all(part in haystack for part in query_parts):
+            matches.append(row)
+            if len(matches) >= limit:
+                break
+    return matches
 
 
 def find_catalog_mentions(text: str, limit: int = 5) -> list[tuple[str, str, str, str]]:
     """Find books whose title/author is explicitly mentioned in a question."""
-    lowered = text.casefold()
+    lowered = normalize_search_text(text)
     with sqlite3.connect(BOOK_DB_PATH) as db:
         rows = db.execute(
             "SELECT author, title, link, raw_text FROM books ORDER BY id DESC"
@@ -194,7 +202,7 @@ def find_catalog_mentions(text: str, limit: int = 5) -> list[tuple[str, str, str
     seen = set()
     for row in rows:
         author, title, link, raw_text = row
-        if (title and title.casefold() in lowered) or (author and author.casefold() in lowered):
+        if (title and normalize_search_text(title) in lowered) or (author and normalize_search_text(author) in lowered):
             key = (author, title, link)
             if key not in seen:
                 matches.append(row)
@@ -209,8 +217,8 @@ def is_book_question(text: str) -> bool:
         "အကြောင်း", "အညွှန်း", "အကြောင်းအရာ", "အနှစ်ချုပ်", "အကျဉ်းချုပ်",
         "သုံးသပ်", "review", "summary", "about", "အခန်း", "ဘာသာပြန်",
     )
-    lowered = text.casefold()
-    return any(marker.casefold() in lowered for marker in markers)
+    lowered = normalize_search_text(text)
+    return any(normalize_search_text(marker) in lowered for marker in markers)
 
 
 def requester_mention(update: Update) -> str:
