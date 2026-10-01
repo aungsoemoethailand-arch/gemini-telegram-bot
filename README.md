@@ -66,7 +66,9 @@ In groups, authorized users can search in any of these ways:
 
 The bot searches the channel catalog first, and replies by mentioning the user who asked. If an `@YourBot ...` query has no catalog match, it is handled as a normal Gemini question.
 
-Private-channel message links work for channel members. The current GitHub Actions runner has temporary storage, so the catalog is rebuilt only from posts received while that bot run is active; persistent history requires a database/host with persistent storage.
+Private-channel message links work for channel members. Text posts are indexed as soon as Telegram delivers the update, normally within a few seconds. CSV documents uploaded to the channel are downloaded and imported automatically. The committed seed CSV is loaded during startup, so these books are searchable immediately after the bot starts.
+
+The current GitHub Actions runner has temporary storage. New channel data remains available while that run is active; the committed seed catalog is reloaded after a restart. Persistent additions require a database/host with persistent storage.
 
 Multiple books can be posted as CSV in one message:
 

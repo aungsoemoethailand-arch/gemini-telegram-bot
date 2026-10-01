@@ -30,6 +30,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "12"))
 ADMIN_TELEGRAM_ID = int((os.getenv("ADMIN_TELEGRAM_ID", "0") or "0").strip())
 BOOK_DB_PATH = os.getenv("BOOK_DB_PATH", "book_catalog.db")
+BOOK_SEED_PATH = os.getenv("BOOK_SEED_PATH", "data/facebook_ai_books.csv")
 
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Add it to .env")
@@ -107,8 +108,12 @@ def extract_book_records(text: str) -> list[tuple[str, str, str]]:
                 if len(row) <= max(author_index, title_index, link_index):
                     continue
                 author = row[author_index].strip()
-                title = row[title_index].strip()
-                link = row[link_index].strip()
+                if author_index == 0 and title_index == 1 and link_index == 2 and len(row) > 3:
+                    title = ",".join(row[1:-1]).strip()
+                    link = row[-1].strip()
+                else:
+                    title = row[title_index].strip()
+                    link = row[link_index].strip()
                 if author or title or link:
                     records.append((author, title, link))
             if records:
@@ -122,14 +127,10 @@ def message_link(chat_id: int, message_id: int) -> str:
     return ""
 
 
-def save_channel_post(message) -> None:
-    text = (message.text or message.caption or "").strip()
-    if not text:
-        return
-    records = extract_book_records(text)
+def save_records(chat_id: int, message_id: int, records: list[tuple[str, str, str]], fallback_text: str = "") -> None:
     with sqlite3.connect(BOOK_DB_PATH) as db:
         for record_no, (author, title, link) in enumerate(records):
-            link = link or message_link(message.chat_id, message.message_id)
+            link = link or message_link(chat_id, message_id)
             record_text = " - ".join(value for value in (author, title, link) if value)
             db.execute(
             """INSERT INTO books(chat_id, message_id, author, title, link, raw_text, created_at, record_no)
@@ -137,8 +138,29 @@ def save_channel_post(message) -> None:
                ON CONFLICT(chat_id, message_id, record_no) DO UPDATE SET
                  author=excluded.author, title=excluded.title, link=excluded.link,
                  raw_text=excluded.raw_text, record_no=excluded.record_no""",
-            (message.chat_id, message.message_id, author, title, link, record_text or text, record_no),
+            (chat_id, message_id, author, title, link, record_text or fallback_text, record_no),
             )
+
+
+def save_channel_post(message) -> None:
+    text = (message.text or message.caption or "").strip()
+    if text:
+        save_records(
+            message.chat_id,
+            message.message_id,
+            extract_book_records(text),
+            text,
+        )
+
+
+def load_seed_catalog() -> int:
+    if not os.path.exists(BOOK_SEED_PATH):
+        logger.warning("Seed catalog not found at %s", BOOK_SEED_PATH)
+        return 0
+    with open(BOOK_SEED_PATH, encoding="utf-8-sig", newline="") as source:
+        records = extract_book_records(source.read())
+    save_records(0, 1, records, "seed catalog")
+    return len(records)
 
 
 def search_catalog(query: str, limit: int = 10) -> list[tuple[str, str, str, str]]:
@@ -350,6 +372,14 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     message = update.channel_post
     if not message:
         return
+    if message.document and (message.document.file_name or "").lower().endswith(".csv"):
+        telegram_file = await context.bot.get_file(message.document.file_id)
+        data = await telegram_file.download_as_bytearray()
+        text = bytes(data).decode("utf-8-sig")
+        records = extract_book_records(text)
+        save_records(message.chat_id, message.message_id, records, text)
+        logger.info("Imported %s CSV records from channel document %s", len(records), message.message_id)
+        return
     save_channel_post(message)
     logger.info("Indexed channel post %s from chat %s", message.message_id, message.chat_id)
 
@@ -415,6 +445,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 def main() -> None:
     init_catalog()
+    logger.info("Loaded %s seed catalog records", load_seed_catalog())
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("myid", my_id))
