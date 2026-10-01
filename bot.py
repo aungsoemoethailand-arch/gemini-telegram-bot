@@ -389,10 +389,6 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def search_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if not is_admin(user_id) and user_id not in allowed_user_ids:
-        await update.message.reply_text("ခွင့်ပြုထားသော user မဟုတ်ပါ။")
-        return
     query = " ".join(context.args).strip()
     if not query:
         await update.message.reply_text("သုံးပုံ: /search စာရေးသူ သို့မဟုတ် စာအုပ်နာမည်")
@@ -406,9 +402,6 @@ async def search_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def ask_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    if not is_admin(user_id) and user_id not in allowed_user_ids:
-        await reply_with_mention(update, "ခွင့်ပြုထားသော user မဟုတ်ပါ။")
-        return
     question = " ".join(context.args).strip()
     results = find_catalog_mentions(question) or search_catalog(question)
     if not question or not results:
@@ -423,10 +416,6 @@ async def ask_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def short_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Support /author-or-title as a quick group search shortcut."""
-    user_id = update.effective_user.id
-    if not is_admin(user_id) and user_id not in allowed_user_ids:
-        await reply_with_mention(update, "ခွင့်ပြုထားသော user မဟုတ်ပါ။")
-        return
     query = search_query_from_text(update.message.text[1:])
     if not query:
         await reply_with_mention(update, "သုံးပုံ: /စာရေးသူ သို့မဟုတ် /စာအုပ်နာမည်")
@@ -471,10 +460,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     mentioned = bot_username and f"@{bot_username}" in update.message.text.casefold()
     if is_group and not mentioned:
         return
-    if not is_admin(user_id) and user_id not in allowed_user_ids:
-        await reply_with_mention(update, "ခွင့်ပြုထားသော user မဟုတ်ပါ။ Admin ကို DM မှာ ဆက်သွယ်ပါ။")
-        return
-
     prompt = update.message.text.strip()
     if not prompt:
         return
@@ -527,8 +512,6 @@ def main() -> None:
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("myid", my_id))
-    application.add_handler(CommandHandler("allow", allow_user))
-    application.add_handler(CommandHandler("remove", remove_user))
     application.add_handler(CommandHandler("search", search_books))
     application.add_handler(CommandHandler("ask", ask_books))
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POSTS, handle_channel_post))

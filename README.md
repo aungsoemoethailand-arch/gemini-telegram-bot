@@ -20,7 +20,6 @@ Edit `.env` and set:
 
 - `TELEGRAM_BOT_TOKEN`: a newly generated token from `@BotFather`
 - `GEMINI_API_KEY`: a key from [Google AI Studio](https://aistudio.google.com/app/apikey)
-- `ADMIN_TELEGRAM_ID`: your numeric Telegram ID; send `/myid` to the bot to see it
 
 ## Run
 
@@ -30,20 +29,11 @@ python bot.py
 
 The bot uses polling, so it is suitable for local testing. Use `/start` to begin and `/reset` to clear a user's conversation history.
 
-## Access control and groups
+## Groups and access
 
-- Only the admin ID and users added by the admin can use the bot.
+- Everyone can use the bot in private chat.
 - In groups, the bot replies only when mentioned, for example: `@YourBot မင်္ဂလာပါ`.
-- In the bot's private chat, the admin can manage access:
-
-```text
-/allow 123456789
-/allow @username
-/remove 123456789
-/remove @username
-```
-
-Use `/myid` to find a numeric Telegram ID. A username can be resolved after that user has sent a message to the bot; numeric IDs are the most reliable option. The current allowlist is held in memory and resets when the GitHub Actions runner restarts.
+- `/search`, `/ask`, and slash-title shortcuts are available to everyone in groups when sent as commands.
 
 ## Private-channel book catalog
 
