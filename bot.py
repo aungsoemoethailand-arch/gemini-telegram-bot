@@ -37,6 +37,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 def groq_key_number(name: str) -> int:
     suffix = name.removeprefix("GROQ_API_KEY")
     return int(suffix[1:]) if suffix.startswith("_") and suffix[1:].isdigit() else 0
@@ -546,12 +548,36 @@ def groq_generate(api_key: str, contents: list[types.Content]):
     return SimpleNamespace(text=text)
 
 
+def openai_generate(contents: list[types.Content]):
+    messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
+    for content in contents:
+        text = "\n".join(part.text for part in (content.parts or []) if part.text)
+        if text:
+            messages.append({"role": "assistant" if content.role == "model" else "user", "content": text})
+    payload = json.dumps({
+        "model": OPENAI_MODEL,
+        "messages": messages,
+        "temperature": 0.7,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+            "User-Agent": "WoW-Book-Finder/1.0",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=45) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    return SimpleNamespace(text=data["choices"][0]["message"]["content"])
+
+
 async def generate_with_fallback(contents: list[types.Content]):
     try:
         return await generate_with_retry(contents)
     except Exception as gemini_error:
-        if not GROQ_API_KEYS:
-            raise
         logger.warning("Gemini failed (%s); trying Groq key pool", type(gemini_error).__name__)
         last_error = gemini_error
         for index, api_key in enumerate(GROQ_API_KEYS, 1):
@@ -561,6 +587,13 @@ async def generate_with_fallback(contents: list[types.Content]):
             except Exception as groq_error:
                 last_error = groq_error
                 logger.warning("Groq key slot %s failed: %s", index, type(groq_error).__name__)
+        if OPENAI_API_KEY:
+            try:
+                logger.info("Trying OpenAI fallback model %s", OPENAI_MODEL)
+                return await asyncio.to_thread(openai_generate, contents)
+            except Exception as openai_error:
+                last_error = openai_error
+                logger.warning("OpenAI fallback failed: %s", type(openai_error).__name__)
         raise last_error
 
 
@@ -787,7 +820,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Remove the failed prompt so a transient error does not corrupt context.
         if history and history[-1].role == "user":
             history.pop()
-        provider_status = "Gemini quota ပြည့်နေပြီး Groq fallback key တွေလည်း မရသေးပါ။" if GROQ_API_KEYS else "Gemini quota ပြည့်နေပါတယ်။ Groq fallback key ထည့်ပြီးရင် အလိုအလျောက် ပြောင်းဖြေပါမယ်။"
+        provider_status = (
+            "Gemini quota ပြည့်နေပြီး Groq/OpenAI fallback တွေလည်း မရသေးပါ။"
+            if GROQ_API_KEYS or OPENAI_API_KEY
+            else "Gemini quota ပြည့်နေပါတယ်။ Groq သို့မဟုတ် OpenAI fallback key ထည့်ပြီးရင် အလိုအလျောက် ပြောင်းဖြေပါမယ်။"
+        )
         await reply_with_mention(
             update,
             f"တောင်းပန်ပါတယ်ရှင်။ {provider_status}\nခဏနောက် ပြန်မေးကြည့်ပါနော်။"
