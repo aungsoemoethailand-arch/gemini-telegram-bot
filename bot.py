@@ -39,7 +39,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 def groq_key_number(name: str) -> int:
     suffix = name.removeprefix("GROQ_API_KEY")
-    return int(suffix[1:]) if suffix.startswith("_") and suffix[1:].isdigit() else 1
+    return int(suffix[1:]) if suffix.startswith("_") and suffix[1:].isdigit() else 0
 
 
 GROQ_API_KEYS = [
@@ -797,6 +797,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 def main() -> None:
     init_catalog()
     logger.info("Loaded %s seed catalog records", load_seed_catalog())
+    logger.info("Configured Groq fallback key slots: %s", len(GROQ_API_KEYS))
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
