@@ -34,6 +34,11 @@ The bot uses polling, so it is suitable for local testing. Use `/start` to begin
 - Everyone can use the bot in private chat.
 - In groups, the bot replies only when mentioned, for example: `@YourBot မင်္ဂလာပါ`.
 - `/search`, `/ask`, and slash-title shortcuts are available to everyone in groups when sent as commands.
+- Search replies use bold titles, a friendly assistant tone, and tappable book-link buttons.
+
+## Uptime
+
+The current deployment uses GitHub Actions. A run can stay alive for up to 350 minutes, and a scheduled workflow attempts to restart it every 5 hours. This is not a guaranteed 24/7 service: GitHub runner startup delays, cancellation delays, or quota limits can create downtime. For reliable always-on operation, move the bot to a persistent VPS or hosting service.
 
 ## Private-channel book catalog
 

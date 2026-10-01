@@ -11,7 +11,7 @@ from collections import defaultdict
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ChatType
 from telegram.helpers import mention_html
 from telegram.ext import (
@@ -49,7 +49,9 @@ allowed_user_ids: set[int] = {ADMIN_TELEGRAM_ID} if ADMIN_TELEGRAM_ID else set()
 known_usernames: dict[str, int] = {}
 
 SYSTEM_INSTRUCTION = (
-    "You are a helpful Telegram assistant. Answer clearly and concisely. "
+    "You are a warm, friendly Burmese-speaking female book assistant. "
+    "Answer naturally and politely, like a helpful human assistant, without claiming to be a real human. "
+    "Use short paragraphs, clear headings, and tasteful symbols when useful. "
     "You can understand and respond in Burmese, English, or the user's language."
 )
 
@@ -235,15 +237,20 @@ def search_query_from_text(text: str, bot_username: str = "") -> str:
 
 
 async def send_search_results(update: Update, results: list[tuple[str, str, str, str]]) -> None:
-    lines = [f"ရှာဖွေမှုရလဒ် ({len(results)} ခု):"]
+    lines = [f"<b>📚 ရှာဖွေမှုရလဒ် ({len(results)} ခု)</b>"]
+    buttons = []
     for index, (author, title, link, raw_text) in enumerate(results, 1):
         display_title = title or raw_text.splitlines()[0][:120]
-        lines.append(f"\n{index}. {display_title}")
+        lines.append(f"\n<b>{index}. {html.escape(display_title)}</b>")
         if author:
-            lines.append(f"စာရေးသူ: {author}")
+            lines.append(f"စာရေးသူ: {html.escape(author)}")
         if link:
-            lines.append(f"လင့်: {link}")
-    await reply_with_mention(update, "\n".join(lines))
+            buttons.append([InlineKeyboardButton(f"🔗 {index} စာအုပ်လင့် ဖွင့်ရန်", url=link)])
+    await update.message.reply_text(
+        f"{requester_mention(update)} " + "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
+    )
 
 
 async def answer_from_catalog(update: Update, question: str, results: list[tuple[str, str, str, str]]) -> None:
@@ -318,8 +325,11 @@ async def generate_with_retry(contents: list[types.Content]):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "မင်္ဂလာပါ။ Gemini AI Bot ဖြစ်ပါတယ်။\n"
-        "မေးချင်တာကို စာရိုက်ပို့ပါ။ စကားဝိုင်းအသစ်စရန် /reset ကိုသုံးပါ။"
+        "မင်္ဂလာပါရှင်။ 📚\n"
+        "စာအုပ်ရှာပေးတာ၊ စာအုပ်အညွှန်းပြောပြတာနဲ့ Gemini AI မေးခွန်းတွေကို ကူညီပေးနိုင်ပါတယ်။\n\n"
+        "• /search စာအုပ်နာမည်\n"
+        "• /ask စာအုပ်နာမည် အကြောင်းအရာပြောပါ\n"
+        "• စကားဝိုင်းအသစ်စရန် /reset"
     )
 
 
