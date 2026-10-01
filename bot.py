@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import html
 import io
 import logging
 import os
@@ -12,6 +13,7 @@ from google import genai
 from google.genai import types
 from telegram import Update
 from telegram.constants import ChatAction, ChatType
+from telegram.helpers import mention_html
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -157,6 +159,41 @@ def search_catalog(query: str, limit: int = 10) -> list[tuple[str, str, str, str
         ).fetchall()
 
 
+def requester_mention(update: Update) -> str:
+    user = update.effective_user
+    return mention_html(user.id, user.full_name or "User")
+
+
+async def reply_with_mention(update: Update, text: str) -> None:
+    await update.message.reply_text(
+        f"{requester_mention(update)} {html.escape(text)}",
+        parse_mode="HTML",
+    )
+
+
+def search_query_from_text(text: str, bot_username: str = "") -> str:
+    query = text.strip()
+    if bot_username:
+        query = re.sub(rf"@{re.escape(bot_username)}\b", "", query, flags=re.I)
+    query = re.sub(r"^/search\b", "", query, flags=re.I).strip()
+    query = re.sub(r"^/", "", query)
+    query = re.sub(r"^(?:ရှာပေးပါ|ရှာပေး|ရှာ|find|search)\s*", "", query, flags=re.I)
+    query = re.sub(r"\s*(?:ရှာပေးပါ|ရှာပေး|ရှာ|find|search)\s*$", "", query, flags=re.I)
+    return query.strip(" \t:၊,။")
+
+
+async def send_search_results(update: Update, results: list[tuple[str, str, str, str]]) -> None:
+    lines = [f"ရှာဖွေမှုရလဒ် ({len(results)} ခု):"]
+    for index, (author, title, link, raw_text) in enumerate(results, 1):
+        display_title = title or raw_text.splitlines()[0][:120]
+        lines.append(f"\n{index}. {display_title}")
+        if author:
+            lines.append(f"စာရေးသူ: {author}")
+        if link:
+            lines.append(f"လင့်: {link}")
+    await reply_with_mention(update, "\n".join(lines))
+
+
 def split_message(text: str, limit: int = 4096) -> list[str]:
     """Split long Gemini replies into Telegram-safe chunks."""
     if len(text) <= limit:
@@ -287,17 +324,26 @@ async def search_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     results = search_catalog(query)
     if not results:
-        await update.message.reply_text("ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။")
+        await reply_with_mention(update, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။")
         return
-    lines = [f"ရှာဖွေမှုရလဒ် ({len(results)} ခု):"]
-    for index, (author, title, link, raw_text) in enumerate(results, 1):
-        display_title = title or raw_text.splitlines()[0][:120]
-        lines.append(f"\n{index}. {display_title}")
-        if author:
-            lines.append(f"စာရေးသူ: {author}")
-        if link:
-            lines.append(f"လင့်: {link}")
-    await update.message.reply_text("\n".join(lines))
+    await send_search_results(update, results)
+
+
+async def short_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Support /author-or-title as a quick group search shortcut."""
+    user_id = update.effective_user.id
+    if not is_admin(user_id) and user_id not in allowed_user_ids:
+        await reply_with_mention(update, "ခွင့်ပြုထားသော user မဟုတ်ပါ။")
+        return
+    query = search_query_from_text(update.message.text[1:])
+    if not query:
+        await reply_with_mention(update, "သုံးပုံ: /စာရေးသူ သို့မဟုတ် /စာအုပ်နာမည်")
+        return
+    results = search_catalog(query)
+    if results:
+        await send_search_results(update, results)
+    else:
+        await reply_with_mention(update, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။")
 
 
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -326,11 +372,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if is_group and not mentioned:
         return
     if not is_admin(user_id) and user_id not in allowed_user_ids:
-        await update.message.reply_text("ခွင့်ပြုထားသော user မဟုတ်ပါ။ Admin ကို DM မှာ ဆက်သွယ်ပါ။")
+        await reply_with_mention(update, "ခွင့်ပြုထားသော user မဟုတ်ပါ။ Admin ကို DM မှာ ဆက်သွယ်ပါ။")
         return
 
     prompt = update.message.text.strip()
     if not prompt:
+        return
+
+    catalog_query = search_query_from_text(prompt, bot_username)
+    catalog_results = search_catalog(catalog_query) if catalog_query else []
+    if catalog_results:
+        await send_search_results(update, catalog_results)
         return
 
     history = user_history[user_id]
@@ -343,15 +395,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         answer = (response.text or "ပြန်လည်ဖြေကြားချက် မရရှိပါ။").strip()
         history.append(types.Content(role="model", parts=[types.Part(text=answer)]))
         history[:] = history[-MAX_HISTORY_MESSAGES:]
-        for chunk in split_message(answer):
-            await update.message.reply_text(chunk)
+        for index, chunk in enumerate(split_message(answer)):
+            if index == 0:
+                await reply_with_mention(update, chunk)
+            else:
+                await update.message.reply_text(chunk)
     except Exception as exc:
         logger.exception("Gemini request failed for user %s", user_id)
         # Remove the failed prompt so a transient error does not corrupt context.
         if history and history[-1].role == "user":
             history.pop()
         error_detail = str(exc).replace(GEMINI_API_KEY, "[REDACTED]")
-        await update.message.reply_text(
+        await reply_with_mention(
+            update,
             "တောင်းပန်ပါတယ်။ Gemini API ချိတ်ဆက်ရာမှာ အခက်အခဲရှိနေပါတယ်။\n"
             f"အကြောင်းရင်း: {type(exc).__name__}: {error_detail[:300]}"
         )
@@ -367,6 +423,12 @@ def main() -> None:
     application.add_handler(CommandHandler("search", search_books))
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POSTS, handle_channel_post))
     application.add_handler(CommandHandler("reset", reset))
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & filters.Regex(r"^/(?!start\b|myid\b|allow\b|remove\b|search\b|reset\b)\S+.*$"),
+            short_search,
+        )
+    )
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot started with model %s", GEMINI_MODEL)
     application.run_polling(allowed_updates=Update.ALL_TYPES)

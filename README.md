@@ -56,6 +56,16 @@ Authorized users can search from the bot DM with:
 /search စာရေးသူ
 ```
 
+In groups, authorized users can search in any of these ways:
+
+```text
+/search စာအုပ်နာမည်
+@YourBot စာအုပ်နာမည်
+/စာအုပ်နာမည်
+```
+
+The bot searches the channel catalog first, and replies by mentioning the user who asked. If an `@YourBot ...` query has no catalog match, it is handled as a normal Gemini question.
+
 Private-channel message links work for channel members. The current GitHub Actions runner has temporary storage, so the catalog is rebuilt only from posts received while that bot run is active; persistent history requires a database/host with persistent storage.
 
 Multiple books can be posted as CSV in one message:
