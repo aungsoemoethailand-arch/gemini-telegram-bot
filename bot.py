@@ -908,10 +908,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     is_group = update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
     bot_username = (context.bot.username or "").casefold()
     mentioned = bot_username and f"@{bot_username}" in update.message.text.casefold()
-    if is_group and not mentioned:
-        return
     prompt = update.message.text.strip()
     if not prompt:
+        return
+    if is_group and not mentioned:
+        # In groups, a plain title/author is a fast link search. Do not run
+        # review lookup or AI/general replies unless the bot is addressed.
+        direct_results = search_catalog(prompt, limit=None)
+        if direct_results:
+            await send_search_results(update, direct_results, search_query=prompt)
         return
 
     catalog_query = search_query_from_text(prompt, bot_username)
