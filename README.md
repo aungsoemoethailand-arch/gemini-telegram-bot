@@ -58,6 +58,20 @@ Authorized users can search from the bot DM with:
 
 Private-channel message links work for channel members. The current GitHub Actions runner has temporary storage, so the catalog is rebuilt only from posts received while that bot run is active; persistent history requires a database/host with persistent storage.
 
+Multiple books can be posted as CSV in one message:
+
+```csv
+author,title,link
+"Tsumiki","စာကျက်ချင်စိတ်","https://t.me/TheBookR/967?single"
+"ကက်စပါဇော်","ပျော်ရွှင်ဖို့ လိုအပ်တဲ့ သတ္တိ","https://t.me/TheBookR/1250?single"
+```
+
+The simpler one-book format also works:
+
+```text
+စာရေးသူ - စာအုပ်နာမည် - စာအုပ်လင့်
+```
+
 ## GitHub
 
 ```bash

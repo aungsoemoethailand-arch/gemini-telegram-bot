@@ -1,4 +1,6 @@
 import asyncio
+import csv
+import io
 import logging
 import os
 import re
@@ -61,7 +63,8 @@ def init_catalog() -> None:
                 link TEXT NOT NULL DEFAULT '',
                 raw_text TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                UNIQUE(chat_id, message_id)
+                record_no INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(chat_id, message_id, record_no)
             )"""
         )
 
@@ -88,6 +91,29 @@ def extract_book_fields(text: str) -> tuple[str, str, str]:
     return author, title, link
 
 
+def extract_book_records(text: str) -> list[tuple[str, str, str]]:
+    """Parse CSV catalog posts or fall back to the single-book parser."""
+    rows = list(csv.reader(io.StringIO(text)))
+    if rows:
+        header = [cell.strip().casefold() for cell in rows[0]]
+        author_index = next((i for i, value in enumerate(header) if value in {"author", "စာရေးသူ"}), None)
+        title_index = next((i for i, value in enumerate(header) if value in {"title", "book", "စာအုပ်နာမည်", "စာအုပ်အမည်"}), None)
+        link_index = next((i for i, value in enumerate(header) if value in {"link", "url", "စာအုပ်လင့်", "လင့်"}), None)
+        if author_index is not None and title_index is not None and link_index is not None:
+            records = []
+            for row in rows[1:]:
+                if len(row) <= max(author_index, title_index, link_index):
+                    continue
+                author = row[author_index].strip()
+                title = row[title_index].strip()
+                link = row[link_index].strip()
+                if author or title or link:
+                    records.append((author, title, link))
+            if records:
+                return records
+    return [extract_book_fields(text)]
+
+
 def message_link(chat_id: int, message_id: int) -> str:
     if str(chat_id).startswith("-100"):
         return f"https://t.me/c/{str(chat_id)[4:]}/{message_id}"
@@ -98,17 +124,19 @@ def save_channel_post(message) -> None:
     text = (message.text or message.caption or "").strip()
     if not text:
         return
-    author, title, link = extract_book_fields(text)
-    link = link or message_link(message.chat_id, message.message_id)
+    records = extract_book_records(text)
     with sqlite3.connect(BOOK_DB_PATH) as db:
-        db.execute(
-            """INSERT INTO books(chat_id, message_id, author, title, link, raw_text, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-               ON CONFLICT(chat_id, message_id) DO UPDATE SET
+        for record_no, (author, title, link) in enumerate(records):
+            link = link or message_link(message.chat_id, message.message_id)
+            record_text = " - ".join(value for value in (author, title, link) if value)
+            db.execute(
+            """INSERT INTO books(chat_id, message_id, author, title, link, raw_text, created_at, record_no)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)
+               ON CONFLICT(chat_id, message_id, record_no) DO UPDATE SET
                  author=excluded.author, title=excluded.title, link=excluded.link,
-                 raw_text=excluded.raw_text""",
-            (message.chat_id, message.message_id, author, title, link, text),
-        )
+                 raw_text=excluded.raw_text, record_no=excluded.record_no""",
+            (message.chat_id, message.message_id, author, title, link, record_text or text, record_no),
+            )
 
 
 def search_catalog(query: str, limit: int = 10) -> list[tuple[str, str, str, str]]:
