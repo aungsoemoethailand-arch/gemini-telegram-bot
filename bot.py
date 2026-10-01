@@ -181,6 +181,36 @@ def search_catalog(query: str, limit: int = 10) -> list[tuple[str, str, str, str
         ).fetchall()
 
 
+def find_catalog_mentions(text: str, limit: int = 5) -> list[tuple[str, str, str, str]]:
+    """Find books whose title/author is explicitly mentioned in a question."""
+    lowered = text.casefold()
+    with sqlite3.connect(BOOK_DB_PATH) as db:
+        rows = db.execute(
+            "SELECT author, title, link, raw_text FROM books ORDER BY id DESC"
+        ).fetchall()
+    matches = []
+    seen = set()
+    for row in rows:
+        author, title, link, raw_text = row
+        if (title and title.casefold() in lowered) or (author and author.casefold() in lowered):
+            key = (author, title, link)
+            if key not in seen:
+                matches.append(row)
+                seen.add(key)
+        if len(matches) >= limit:
+            break
+    return matches
+
+
+def is_book_question(text: str) -> bool:
+    markers = (
+        "အကြောင်း", "အညွှန်း", "အကြောင်းအရာ", "အနှစ်ချုပ်", "အကျဉ်းချုပ်",
+        "သုံးသပ်", "review", "summary", "about", "အခန်း", "ဘာသာပြန်",
+    )
+    lowered = text.casefold()
+    return any(marker.casefold() in lowered for marker in markers)
+
+
 def requester_mention(update: Update) -> str:
     user = update.effective_user
     return mention_html(user.id, user.full_name or "User")
@@ -214,6 +244,29 @@ async def send_search_results(update: Update, results: list[tuple[str, str, str,
         if link:
             lines.append(f"လင့်: {link}")
     await reply_with_mention(update, "\n".join(lines))
+
+
+async def answer_from_catalog(update: Update, question: str, results: list[tuple[str, str, str, str]]) -> None:
+    context = "\n\n".join(
+        f"စာရေးသူ: {author}\nစာအုပ်: {title}\nLink: {link}\nChannel အညွှန်း/post: {raw_text[:3500]}"
+        for author, title, link, raw_text in results
+    )
+    prompt = (
+        "Answer the user's question using only the channel catalog context below. "
+        "Respond in the user's language. If the context does not contain the answer, say so clearly; "
+        "do not invent book details.\n\n"
+        f"Catalog context:\n{context}\n\nUser question: {question}"
+    )
+    await update.message.chat.send_action(ChatAction.TYPING)
+    response = await generate_with_retry([
+        types.Content(role="user", parts=[types.Part(text=prompt)])
+    ])
+    answer = (response.text or "ဒီစာအုပ်အတွက် အညွှန်းအချက်အလက် မလုံလောက်ပါ။").strip()
+    for index, chunk in enumerate(split_message(answer)):
+        if index == 0:
+            await reply_with_mention(update, chunk)
+        else:
+            await update.message.reply_text(chunk)
 
 
 def split_message(text: str, limit: int = 4096) -> list[str]:
@@ -351,6 +404,23 @@ async def search_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await send_search_results(update, results)
 
 
+async def ask_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not is_admin(user_id) and user_id not in allowed_user_ids:
+        await reply_with_mention(update, "ခွင့်ပြုထားသော user မဟုတ်ပါ။")
+        return
+    question = " ".join(context.args).strip()
+    results = find_catalog_mentions(question) or search_catalog(question)
+    if not question or not results:
+        await reply_with_mention(update, "စာအုပ်နာမည်ပါအောင် မေးပါ။ ဥပမာ /ask စာအုပ်နာမည် အကြောင်းအရာ ဘာလဲ")
+        return
+    try:
+        await answer_from_catalog(update, question, results)
+    except Exception as exc:
+        logger.exception("Catalog answer failed for user %s", user_id)
+        await reply_with_mention(update, f"အညွှန်းကို ဖြေရာမှာ အခက်အခဲရှိပါတယ်: {type(exc).__name__}")
+
+
 async def short_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Support /author-or-title as a quick group search shortcut."""
     user_id = update.effective_user.id
@@ -410,6 +480,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     catalog_query = search_query_from_text(prompt, bot_username)
+    mentioned_books = find_catalog_mentions(prompt)
+    if is_book_question(prompt) and mentioned_books:
+        try:
+            await answer_from_catalog(update, prompt, mentioned_books)
+        except Exception as exc:
+            logger.exception("Catalog answer failed for user %s", user_id)
+            await reply_with_mention(update, f"အညွှန်းကို ဖြေရာမှာ အခက်အခဲရှိပါတယ်: {type(exc).__name__}")
+        return
     catalog_results = search_catalog(catalog_query) if catalog_query else []
     if catalog_results:
         await send_search_results(update, catalog_results)
@@ -452,11 +530,12 @@ def main() -> None:
     application.add_handler(CommandHandler("allow", allow_user))
     application.add_handler(CommandHandler("remove", remove_user))
     application.add_handler(CommandHandler("search", search_books))
+    application.add_handler(CommandHandler("ask", ask_books))
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POSTS, handle_channel_post))
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(
         MessageHandler(
-            filters.TEXT & filters.Regex(r"^/(?!start\b|myid\b|allow\b|remove\b|search\b|reset\b)\S+.*$"),
+            filters.TEXT & filters.Regex(r"^/(?!start\b|myid\b|allow\b|remove\b|search\b|ask\b|reset\b)\S+.*$"),
             short_search,
         )
     )
