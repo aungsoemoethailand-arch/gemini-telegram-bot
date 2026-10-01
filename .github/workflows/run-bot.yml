@@ -54,6 +54,9 @@ jobs:
           test -n "$TELEGRAM_BOT_TOKEN" || { echo "TELEGRAM_BOT_TOKEN is missing"; exit 1; }
           test -n "$GEMINI_API_KEY" || { echo "GEMINI_API_KEY is missing"; exit 1; }
           if test -z "$GROQ_API_KEY" && test -z "$GROQ_API_KEY_1"; then echo "Warning: no GROQ_API_KEY fallback secret is loaded"; fi
+          groq_slots=0
+          for key in "$GROQ_API_KEY" "$GROQ_API_KEY_1" "$GROQ_API_KEY_2" "$GROQ_API_KEY_3" "$GROQ_API_KEY_4" "$GROQ_API_KEY_5" "$GROQ_API_KEY_6" "$GROQ_API_KEY_7" "$GROQ_API_KEY_8" "$GROQ_API_KEY_9" "$GROQ_API_KEY_10"; do test -n "$key" && groq_slots=$((groq_slots + 1)); done
+          echo "Groq fallback slots loaded: $groq_slots"
           echo "Telegram and Gemini secrets are configured."
 
       - name: Start bot
