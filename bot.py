@@ -98,13 +98,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         history[:] = history[-MAX_HISTORY_MESSAGES:]
         for chunk in split_message(answer):
             await update.message.reply_text(chunk)
-    except Exception:
+    except Exception as exc:
         logger.exception("Gemini request failed for user %s", user_id)
         # Remove the failed prompt so a transient error does not corrupt context.
         if history and history[-1].role == "user":
             history.pop()
+        error_detail = str(exc).replace(GEMINI_API_KEY, "[REDACTED]")
         await update.message.reply_text(
-            "တောင်းပန်ပါတယ်။ Gemini API ချိတ်ဆက်ရာမှာ အခက်အခဲရှိနေပါတယ်။ ခဏနောက် ပြန်စမ်းပါ။"
+            "တောင်းပန်ပါတယ်။ Gemini API ချိတ်ဆက်ရာမှာ အခက်အခဲရှိနေပါတယ်။\n"
+            f"အကြောင်းရင်း: {type(exc).__name__}: {error_detail[:300]}"
         )
 
 
