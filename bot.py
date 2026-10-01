@@ -337,6 +337,29 @@ def sync_review_site() -> tuple[int, int]:
     return new_count, len(posts)
 
 
+def cleanup_duplicate_channel_books() -> int:
+    """Remove older reposts of the same channel author/title, keeping the newest row."""
+    deleted = 0
+    seen: set[tuple[int, str, str]] = set()
+    with sqlite3.connect(BOOK_DB_PATH) as db:
+        rows = db.execute(
+            """SELECT id, chat_id, author, title
+               FROM books
+               WHERE chat_id NOT IN (0, ?)
+                 AND author != '' AND title != ''
+               ORDER BY id DESC""",
+            (-2000000001,),
+        ).fetchall()
+        for row_id, chat_id, author, title in rows:
+            key = (chat_id, normalize_search_text(author), normalize_search_text(title))
+            if key in seen:
+                db.execute("DELETE FROM books WHERE id = ?", (row_id,))
+                deleted += 1
+            else:
+                seen.add(key)
+    return deleted
+
+
 def review_matches(query: str, posts: list[dict]) -> list[tuple[str, str, str, str]]:
     normalized = normalize_search_text(clean_search_query(query))
     if not normalized:
@@ -743,10 +766,12 @@ async def update_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.chat.send_action(ChatAction.TYPING)
     try:
         new_count, total_count = await asyncio.to_thread(sync_review_site)
+        removed_count = await asyncio.to_thread(cleanup_duplicate_channel_books)
         await reply_with_mention(
             update,
             f"Review site ကို စစ်ပြီးပါပြီရှင် 📚\n"
             f"အသစ်တွေ့ပြီး catalog ထဲ ထည့်ထားတာ: {new_count} ခု\n"
+            f"ထပ်နေတဲ့ channel အညွှန်းဟောင်း ဖယ်ရှားတာ: {removed_count} ခု\n"
             f"Review စုစုပေါင်း: {total_count} ခု\n\n"
             "အသစ်တင်ထားတဲ့စာအုပ်ကို အခုချက်ချင်း /search သို့မဟုတ် /ask နဲ့ ရှာလို့ရပါပြီရှင်။",
         )
@@ -953,6 +978,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 def main() -> None:
     init_catalog()
     logger.info("Loaded %s seed catalog records", load_seed_catalog())
+    logger.info("Removed %s duplicate channel catalog rows", cleanup_duplicate_channel_books())
     logger.info("Configured Groq fallback key slots: %s", len(GROQ_API_KEYS))
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))

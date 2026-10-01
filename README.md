@@ -92,7 +92,7 @@ To manually check for new reviews from the public site, send:
 /update
 ```
 
-The bot force-refreshes `https://whispermmepub.github.io/Review/`, adds unseen review links to the catalog, and reports both the number of new entries and the current total. After that, use `/search` or `/ask` normally.
+The bot force-refreshes `https://whispermmepub.github.io/Review/`, adds unseen review links to the catalog, removes older duplicate channel reposts with the same author/title while keeping the newest entry, and reports the counts. After that, use `/search` or `/ask` normally.
 
 For the original annotation posted in the Channel, use `/ask` or mention the bot with the book name:
 
