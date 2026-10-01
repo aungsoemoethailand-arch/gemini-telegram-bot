@@ -218,9 +218,16 @@ def requester_mention(update: Update) -> str:
     return mention_html(user.id, user.full_name or "User")
 
 
+def format_assistant_html(text: str) -> str:
+    formatted = html.escape(text)
+    formatted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", formatted, flags=re.S)
+    formatted = re.sub(r"`([^`]+)`", r"<code>\1</code>", formatted)
+    return formatted
+
+
 async def reply_with_mention(update: Update, text: str) -> None:
     await update.message.reply_text(
-        f"{requester_mention(update)} {html.escape(text)}",
+        f"{requester_mention(update)} {format_assistant_html(text)}",
         parse_mode="HTML",
     )
 
