@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import difflib
+import hashlib
 import html
 import io
 import json
@@ -11,6 +12,7 @@ import secrets
 import sqlite3
 import time
 import urllib.request
+import urllib.parse
 import unicodedata
 from html.parser import HTMLParser
 from types import SimpleNamespace
@@ -262,9 +264,9 @@ def fetch_url(url: str) -> str:
         return response.read().decode("utf-8", errors="replace")
 
 
-def load_review_posts() -> list[dict]:
+def load_review_posts(force: bool = False) -> list[dict]:
     now = time.time()
-    if now - float(review_cache["loaded_at"]) < 600:
+    if not force and now - float(review_cache["loaded_at"]) < 600:
         return review_cache["posts"]  # type: ignore[return-value]
     try:
         posts = json.loads(fetch_url(REVIEW_SITE_BASE + "assets/posts.json"))
@@ -273,6 +275,40 @@ def load_review_posts() -> list[dict]:
     except Exception:
         logger.exception("Unable to load review site index")
         return []
+
+
+def sync_review_site() -> tuple[int, int]:
+    """Refresh the public review index and add unseen review links to SQLite."""
+    posts = load_review_posts(force=True)
+    if not posts:
+        return 0, 0
+    source_chat_id = -2000000001
+    with sqlite3.connect(BOOK_DB_PATH) as db:
+        known_links = {
+            row[0]
+            for row in db.execute(
+                "SELECT link FROM books WHERE chat_id = ? AND link != ?",
+                (source_chat_id, ""),
+            )
+        }
+    new_count = 0
+    for post in posts:
+        relative_link = str(post.get("link", "")).strip()
+        if not relative_link:
+            continue
+        link = urllib.parse.urljoin(REVIEW_SITE_BASE, relative_link)
+        author = str(post.get("author", "")).strip()
+        title = str(post.get("title", "")).strip()
+        record_id = int(hashlib.sha1(link.encode("utf-8")).hexdigest()[:12], 16)
+        save_records(
+            source_chat_id,
+            record_id,
+            [(author, title, link)],
+            " - ".join(value for value in (author, title, link) if value),
+        )
+        if link not in known_links:
+            new_count += 1
+    return new_count, len(posts)
 
 
 def review_matches(query: str, posts: list[dict]) -> list[tuple[str, str, str, str]]:
@@ -676,6 +712,22 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def update_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.chat.send_action(ChatAction.TYPING)
+    try:
+        new_count, total_count = await asyncio.to_thread(sync_review_site)
+        await reply_with_mention(
+            update,
+            f"Review site ကို စစ်ပြီးပါပြီရှင် 📚\n"
+            f"အသစ်တွေ့ပြီး catalog ထဲ ထည့်ထားတာ: {new_count} ခု\n"
+            f"Review စုစုပေါင်း: {total_count} ခု\n\n"
+            "အသစ်တင်ထားတဲ့စာအုပ်ကို အခုချက်ချင်း /search သို့မဟုတ် /ask နဲ့ ရှာလို့ရပါပြီရှင်။",
+        )
+    except Exception:
+        logger.exception("Review site update failed")
+        await reply_with_mention(update, "Review site ကို update လုပ်ရာမှာ အခက်အခဲရှိပါတယ်ရှင်။ ခဏနောက် ပြန်စမ်းပါနော်။")
+
+
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -896,6 +948,7 @@ def main() -> None:
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("update", update_reviews))
     application.add_handler(CommandHandler("myid", my_id))
     application.add_handler(CommandHandler("search", search_books))
     application.add_handler(CommandHandler("ask", ask_books))
@@ -905,7 +958,7 @@ def main() -> None:
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(
         MessageHandler(
-            filters.TEXT & filters.Regex(r"^/(?!start\b|help\b|myid\b|allow\b|remove\b|search\b|ask\b|reset\b)\S+.*$"),
+            filters.TEXT & filters.Regex(r"^/(?!start\b|help\b|update\b|myid\b|allow\b|remove\b|search\b|ask\b|reset\b)\S+.*$"),
             short_search,
         )
     )

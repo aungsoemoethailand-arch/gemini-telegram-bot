@@ -81,6 +81,14 @@ Channel posts support two separate modes:
 
 Channel reviews are checked before the public website, so your own newly posted annotation is the source used for answers. The public Review site/GitHub-generated index remains a fallback for reviews that have not yet been posted into the Channel.
 
+To manually check for new reviews from the public site, send:
+
+```text
+/update
+```
+
+The bot force-refreshes `https://whispermmepub.github.io/Review/`, adds unseen review links to the catalog, and reports both the number of new entries and the current total. After that, use `/search` or `/ask` normally.
+
 For the original annotation posted in the Channel, use `/ask` or mention the bot with the book name:
 
 ```text
