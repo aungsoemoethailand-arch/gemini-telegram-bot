@@ -239,23 +239,49 @@ class ReviewBodyParser(HTMLParser):
         super().__init__()
         self.depth = 0
         self.parts: list[str] = []
+        self.block_tags = {"p", "div", "section", "article", "h1", "h2", "h3", "h4", "li", "blockquote"}
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "div" and "post-body" in attrs.get("class", "").split():
             self.depth = 1
         elif self.depth:
+            if tag == "br":
+                self.parts.append("\n")
+            elif tag in self.block_tags:
+                self.parts.append("\n\n")
             self.depth += 1
 
     def handle_endtag(self, tag):
         if self.depth:
+            if tag in self.block_tags:
+                self.parts.append("\n\n")
             self.depth -= 1
 
     def handle_data(self, data):
         if self.depth:
-            clean = data.strip()
+            clean = re.sub(r"[ \t\u00a0]+", " ", data).strip()
             if clean:
                 self.parts.append(clean)
+
+
+def normalize_review_text(text: str) -> str:
+    """Keep readable line/paragraph breaks without leaking HTML whitespace noise."""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n").replace("\u00a0", " ")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
+    cleaned: list[str] = []
+    for line in lines:
+        if line:
+            cleaned.append(line)
+        elif cleaned and cleaned[-1] != "":
+            cleaned.append("")
+    while cleaned and cleaned[-1] == "":
+        cleaned.pop()
+    return "\n".join(cleaned)
+
+
+def review_text_from_parser(parser: ReviewBodyParser) -> str:
+    return normalize_review_text("".join(parser.parts))
 
 
 def fetch_url(url: str) -> str:
@@ -328,9 +354,9 @@ def review_matches(query: str, posts: list[dict]) -> list[tuple[str, str, str, s
             detail_url = REVIEW_SITE_BASE + post["link"]
             parser = ReviewBodyParser()
             parser.feed(fetch_url(detail_url))
-            review_text = "\n".join(parser.parts).strip() or post.get("excerpt", "")
+            review_text = review_text_from_parser(parser) or normalize_review_text(post.get("excerpt", ""))
         except Exception:
-            review_text = post.get("excerpt", "")
+            review_text = normalize_review_text(post.get("excerpt", ""))
         matches.append((post.get("author", ""), post.get("title", ""), detail_url, review_text))
     return matches
 
@@ -505,7 +531,8 @@ async def answer_from_catalog(update: Update, question: str, results: list[tuple
         lines.append(f"\n<b>{html.escape(display_title)}</b>")
         if author:
             lines.append(f"စာရေးသူ: {html.escape(author)}")
-        lines.append(html.escape(raw_text[:3500]))
+        review_text = normalize_review_text(raw_text)[:3500]
+        lines.append(html.escape(review_text))
         if link:
             button_title = re.sub(r"\s+", " ", display_title).strip()[:48]
             buttons.append([InlineKeyboardButton(f"📖 {button_title}", url=link)])
