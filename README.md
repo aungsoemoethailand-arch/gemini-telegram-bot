@@ -45,6 +45,19 @@ The bot uses polling, so it is suitable for local testing. Use `/start` to begin
 
 Use `/myid` to find a numeric Telegram ID. A username can be resolved after that user has sent a message to the bot; numeric IDs are the most reliable option. The current allowlist is held in memory and resets when the GitHub Actions runner restarts.
 
+## Private-channel book catalog
+
+Add the bot as an administrator in the private Telegram channel. New channel posts are indexed automatically. The bot stores the post text, author, book title, and the first URL it finds in a local SQLite catalog.
+
+Authorized users can search from the bot DM with:
+
+```text
+/search စာအုပ်နာမည်
+/search စာရေးသူ
+```
+
+Private-channel message links work for channel members. The current GitHub Actions runner has temporary storage, so the catalog is rebuilt only from posts received while that bot run is active; persistent history requires a database/host with persistent storage.
+
 ## GitHub
 
 ```bash

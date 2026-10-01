@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+import re
+import sqlite3
 from collections import defaultdict
 
 from dotenv import load_dotenv
@@ -23,6 +25,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "12"))
 ADMIN_TELEGRAM_ID = int((os.getenv("ADMIN_TELEGRAM_ID", "0") or "0").strip())
+BOOK_DB_PATH = os.getenv("BOOK_DB_PATH", "book_catalog.db")
 
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Add it to .env")
@@ -44,6 +47,86 @@ SYSTEM_INSTRUCTION = (
     "You are a helpful Telegram assistant. Answer clearly and concisely. "
     "You can understand and respond in Burmese, English, or the user's language."
 )
+
+
+def init_catalog() -> None:
+    with sqlite3.connect(BOOK_DB_PATH) as db:
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS books (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                author TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                link TEXT NOT NULL DEFAULT '',
+                raw_text TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(chat_id, message_id)
+            )"""
+        )
+
+
+def extract_book_fields(text: str) -> tuple[str, str, str]:
+    """Extract author/title/link from common channel post formats."""
+    link_match = re.search(r"https?://\S+", text)
+    link = link_match.group(0).rstrip(")],။၊") if link_match else ""
+    author = ""
+    title = ""
+    for line in text.splitlines():
+        clean = line.strip()
+        author_match = re.match(r"(?:စာရေးသူ|author)\s*[:：-]\s*(.+)", clean, re.I)
+        title_match = re.match(r"(?:စာအုပ်နာမည်|စာအုပ်အမည်|title|book)\s*[:：-]\s*(.+)", clean, re.I)
+        if author_match:
+            author = author_match.group(1).strip()
+        elif title_match:
+            title = title_match.group(1).strip()
+    if not author or not title:
+        parts = re.split(r"\s*[-–—|]\s*", text.replace("\n", " "), maxsplit=2)
+        if len(parts) >= 2:
+            author = author or parts[0].strip()
+            title = title or parts[1].strip()
+    return author, title, link
+
+
+def message_link(chat_id: int, message_id: int) -> str:
+    if str(chat_id).startswith("-100"):
+        return f"https://t.me/c/{str(chat_id)[4:]}/{message_id}"
+    return ""
+
+
+def save_channel_post(message) -> None:
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        return
+    author, title, link = extract_book_fields(text)
+    link = link or message_link(message.chat_id, message.message_id)
+    with sqlite3.connect(BOOK_DB_PATH) as db:
+        db.execute(
+            """INSERT INTO books(chat_id, message_id, author, title, link, raw_text, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(chat_id, message_id) DO UPDATE SET
+                 author=excluded.author, title=excluded.title, link=excluded.link,
+                 raw_text=excluded.raw_text""",
+            (message.chat_id, message.message_id, author, title, link, text),
+        )
+
+
+def search_catalog(query: str, limit: int = 10) -> list[tuple[str, str, str, str]]:
+    words = [word for word in re.split(r"\s+", query.strip()) if word]
+    if not words:
+        return []
+    clauses = []
+    params: list[str] = []
+    for word in words:
+        pattern = f"%{word}%"
+        clauses.append("(author LIKE ? OR title LIKE ? OR raw_text LIKE ?)")
+        params.extend([pattern, pattern, pattern])
+    with sqlite3.connect(BOOK_DB_PATH) as db:
+        return db.execute(
+            f"SELECT author, title, link, raw_text FROM books WHERE {' AND '.join(clauses)} "
+            "ORDER BY id DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
 
 
 def split_message(text: str, limit: int = 4096) -> list[str]:
@@ -165,6 +248,38 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(f"Removed user: {target}")
 
 
+async def search_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not is_admin(user_id) and user_id not in allowed_user_ids:
+        await update.message.reply_text("ခွင့်ပြုထားသော user မဟုတ်ပါ။")
+        return
+    query = " ".join(context.args).strip()
+    if not query:
+        await update.message.reply_text("သုံးပုံ: /search စာရေးသူ သို့မဟုတ် စာအုပ်နာမည်")
+        return
+    results = search_catalog(query)
+    if not results:
+        await update.message.reply_text("ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။")
+        return
+    lines = [f"ရှာဖွေမှုရလဒ် ({len(results)} ခု):"]
+    for index, (author, title, link, raw_text) in enumerate(results, 1):
+        display_title = title or raw_text.splitlines()[0][:120]
+        lines.append(f"\n{index}. {display_title}")
+        if author:
+            lines.append(f"စာရေးသူ: {author}")
+        if link:
+            lines.append(f"လင့်: {link}")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.channel_post
+    if not message:
+        return
+    save_channel_post(message)
+    logger.info("Indexed channel post %s from chat %s", message.message_id, message.chat_id)
+
+
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_history.pop(update.effective_user.id, None)
     await update.message.reply_text("စကားဝိုင်းမှတ်တမ်းကို ဖျက်ပြီးပါပြီ။")
@@ -215,11 +330,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def main() -> None:
+    init_catalog()
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("myid", my_id))
     application.add_handler(CommandHandler("allow", allow_user))
     application.add_handler(CommandHandler("remove", remove_user))
+    application.add_handler(CommandHandler("search", search_books))
+    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POSTS, handle_channel_post))
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot started with model %s", GEMINI_MODEL)
