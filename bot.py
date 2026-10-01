@@ -40,6 +40,10 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
 def groq_key_number(name: str) -> int:
     suffix = name.removeprefix("GROQ_API_KEY")
     return int(suffix[1:]) if suffix.startswith("_") and suffix[1:].isdigit() else 0
@@ -549,30 +553,50 @@ def groq_generate(api_key: str, contents: list[types.Content]):
     return SimpleNamespace(text=text)
 
 
-def openai_generate(contents: list[types.Content]):
+def compatible_generate(api_key: str, endpoint: str, model: str, contents: list[types.Content], extra_headers: dict[str, str] | None = None):
     messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
     for content in contents:
         text = "\n".join(part.text for part in (content.parts or []) if part.text)
         if text:
             messages.append({"role": "assistant" if content.role == "model" else "user", "content": text})
     payload = json.dumps({
-        "model": OPENAI_MODEL,
+        "model": model,
         "messages": messages,
         "temperature": 0.7,
     }).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "WoW-Book-Finder/1.0",
+    }
+    headers.update(extra_headers or {})
     request = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions",
+        endpoint,
         data=payload,
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-            "User-Agent": "WoW-Book-Finder/1.0",
-        },
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=45) as response:
         data = json.loads(response.read().decode("utf-8"))
     return SimpleNamespace(text=data["choices"][0]["message"]["content"])
+
+
+def openai_generate(contents: list[types.Content]):
+    return compatible_generate(OPENAI_API_KEY, "https://api.openai.com/v1/chat/completions", OPENAI_MODEL, contents)
+
+
+def deepseek_generate(contents: list[types.Content]):
+    return compatible_generate(DEEPSEEK_API_KEY, "https://api.deepseek.com/chat/completions", DEEPSEEK_MODEL, contents)
+
+
+def openrouter_generate(contents: list[types.Content]):
+    return compatible_generate(
+        OPENROUTER_API_KEY,
+        "https://openrouter.ai/api/v1/chat/completions",
+        OPENROUTER_MODEL,
+        contents,
+        {"HTTP-Referer": "https://github.com/aungsoemoethailand-arch/gemini-telegram-bot", "X-Title": "WoW Book Finder"},
+    )
 
 
 async def generate_with_fallback(contents: list[types.Content]):
@@ -598,6 +622,19 @@ async def generate_with_fallback(contents: list[types.Content]):
                 last_error = openai_error
                 failures.append(f"OpenAI:{provider_error_label(openai_error)}")
                 logger.warning("OpenAI fallback failed: %s", type(openai_error).__name__)
+        for label, api_key, generator in (
+            ("DeepSeek", DEEPSEEK_API_KEY, deepseek_generate),
+            ("OpenRouter", OPENROUTER_API_KEY, openrouter_generate),
+        ):
+            if not api_key:
+                continue
+            try:
+                logger.info("Trying %s fallback", label)
+                return await asyncio.to_thread(generator, contents)
+            except Exception as provider_error:
+                last_error = provider_error
+                failures.append(f"{label}:{provider_error_label(provider_error)}")
+                logger.warning("%s fallback failed: %s", label, type(provider_error).__name__)
         setattr(last_error, "provider_failures", ", ".join(failures))
         raise last_error
 

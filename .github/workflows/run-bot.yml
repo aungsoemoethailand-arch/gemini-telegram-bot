@@ -36,6 +36,10 @@ jobs:
       GROQ_MODEL: llama-3.1-8b-instant
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_MODEL: gpt-4o-mini
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_MODEL: deepseek-chat
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENROUTER_MODEL: openrouter/free
       MAX_HISTORY_MESSAGES: 12
     steps:
       - name: Check out repository
