@@ -44,6 +44,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
+AI_HTTP_TIMEOUT = 15
 def groq_key_number(name: str) -> int:
     suffix = name.removeprefix("GROQ_API_KEY")
     return int(suffix[1:]) if suffix.startswith("_") and suffix[1:].isdigit() else 0
@@ -496,8 +497,8 @@ def split_message(text: str, limit: int = 4096) -> list[str]:
 
 
 async def generate_with_retry(contents: list[types.Content]):
-    """Retry temporary Gemini capacity/rate-limit failures before giving up."""
-    for attempt in range(3):
+    """Use at most one short Gemini retry; quota errors go straight to fallback."""
+    for attempt in range(2):
         try:
             return await asyncio.to_thread(
                 client.models.generate_content,
@@ -514,9 +515,11 @@ async def generate_with_retry(contents: list[types.Content]):
                 marker in error_text
                 for marker in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED")
             )
-            if not transient or attempt == 2:
+            if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
                 raise
-            delay = 3 * (2**attempt)
+            if not transient or attempt == 1:
+                raise
+            delay = 1
             logger.warning(
                 "Temporary Gemini failure; retrying in %ss (attempt %s/3): %s",
                 delay,
@@ -547,7 +550,7 @@ def groq_generate(api_key: str, contents: list[types.Content]):
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=45) as response:
+    with urllib.request.urlopen(request, timeout=AI_HTTP_TIMEOUT) as response:
         data = json.loads(response.read().decode("utf-8"))
     text = data["choices"][0]["message"]["content"]
     return SimpleNamespace(text=text)
@@ -576,7 +579,7 @@ def compatible_generate(api_key: str, endpoint: str, model: str, contents: list[
         headers=headers,
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=45) as response:
+    with urllib.request.urlopen(request, timeout=AI_HTTP_TIMEOUT) as response:
         data = json.loads(response.read().decode("utf-8"))
     return SimpleNamespace(text=data["choices"][0]["message"]["content"])
 
