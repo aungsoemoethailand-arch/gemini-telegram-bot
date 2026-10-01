@@ -43,7 +43,7 @@ The current UI trial adds a friendly welcome menu with `📚 စာအုပ်�
 
 ## AI fallback
 
-For normal AI questions, the bot tries Gemini first. If Gemini returns a quota/rate-limit or temporary capacity error, it automatically tries Groq using `GROQ_API_KEY`. Add a GitHub repository secret named `GROQ_API_KEY`; leaving it empty keeps Gemini-only behavior.
+For normal AI questions, the bot tries Gemini first. If Gemini returns a quota/rate-limit or temporary capacity error, it automatically tries Groq. Add one or more GitHub repository secrets named `GROQ_API_KEY`, `GROQ_API_KEY_2`, `GROQ_API_KEY_3`, and so on up to `_10`. The bot uses them in numeric order and automatically tries the next key if a Groq key fails. Use underscores only; GitHub secret names such as `GROQ_API_KEY-3,4` are not supported. Leaving all Groq secrets empty keeps Gemini-only behavior.
 
 ## Uptime
 

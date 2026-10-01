@@ -36,8 +36,20 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+def groq_key_number(name: str) -> int:
+    suffix = name.removeprefix("GROQ_API_KEY")
+    return int(suffix[1:]) if suffix.startswith("_") and suffix[1:].isdigit() else 1
+
+
+GROQ_API_KEYS = [
+    value.strip()
+    for name, value in sorted(
+        os.environ.items(),
+        key=lambda item: groq_key_number(item[0]),
+    )
+    if (name == "GROQ_API_KEY" or re.fullmatch(r"GROQ_API_KEY_\d+", name)) and value.strip()
+]
 MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "12"))
 ADMIN_TELEGRAM_ID = int((os.getenv("ADMIN_TELEGRAM_ID", "0") or "0").strip())
 BOOK_DB_PATH = os.getenv("BOOK_DB_PATH", "book_catalog.db")
@@ -507,7 +519,7 @@ async def generate_with_retry(contents: list[types.Content]):
             await asyncio.sleep(delay)
 
 
-def groq_generate(contents: list[types.Content]):
+def groq_generate(api_key: str, contents: list[types.Content]):
     messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
     for content in contents:
         text = "\n".join(part.text for part in (content.parts or []) if part.text)
@@ -522,7 +534,7 @@ def groq_generate(contents: list[types.Content]):
         "https://api.groq.com/openai/v1/chat/completions",
         data=payload,
         headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "User-Agent": "WoW-Book-Finder/1.0",
         },
@@ -538,10 +550,18 @@ async def generate_with_fallback(contents: list[types.Content]):
     try:
         return await generate_with_retry(contents)
     except Exception as gemini_error:
-        if not GROQ_API_KEY:
+        if not GROQ_API_KEYS:
             raise
-        logger.warning("Gemini failed (%s); trying Groq fallback", type(gemini_error).__name__)
-        return await asyncio.to_thread(groq_generate, contents)
+        logger.warning("Gemini failed (%s); trying Groq key pool", type(gemini_error).__name__)
+        last_error = gemini_error
+        for index, api_key in enumerate(GROQ_API_KEYS, 1):
+            try:
+                logger.info("Trying Groq fallback key slot %s/%s", index, len(GROQ_API_KEYS))
+                return await asyncio.to_thread(groq_generate, api_key, contents)
+            except Exception as groq_error:
+                last_error = groq_error
+                logger.warning("Groq key slot %s failed: %s", index, type(groq_error).__name__)
+        raise last_error
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -767,7 +787,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Remove the failed prompt so a transient error does not corrupt context.
         if history and history[-1].role == "user":
             history.pop()
-        provider_status = "Gemini quota ပြည့်နေပြီး Groq fallback လည်း မရသေးပါ။" if GROQ_API_KEY else "Gemini quota ပြည့်နေပါတယ်။ Groq fallback key ထည့်ပြီးရင် အလိုအလျောက် ပြောင်းဖြေပါမယ်။"
+        provider_status = "Gemini quota ပြည့်နေပြီး Groq fallback key တွေလည်း မရသေးပါ။" if GROQ_API_KEYS else "Gemini quota ပြည့်နေပါတယ်။ Groq fallback key ထည့်ပြီးရင် အလိုအလျောက် ပြောင်းဖြေပါမယ်။"
         await reply_with_mention(
             update,
             f"တောင်းပန်ပါတယ်ရှင်။ {provider_status}\nခဏနောက် ပြန်မေးကြည့်ပါနော်။"
