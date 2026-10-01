@@ -33,7 +33,7 @@ jobs:
       GROQ_API_KEY_8: ${{ secrets.GROQ_API_KEY_8 }}
       GROQ_API_KEY_9: ${{ secrets.GROQ_API_KEY_9 }}
       GROQ_API_KEY_10: ${{ secrets.GROQ_API_KEY_10 }}
-      GROQ_MODEL: llama-3.3-70b-versatile
+      GROQ_MODEL: llama-3.1-8b-instant
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_MODEL: gpt-4o-mini
       MAX_HISTORY_MESSAGES: 12

@@ -43,7 +43,7 @@ The current UI trial adds a friendly welcome menu with `📚 စာအုပ်�
 
 ## AI fallback
 
-For normal AI questions, the bot uses this automatic order: **Gemini → Groq key pool → ChatGPT/OpenAI**. If Gemini returns a quota/rate-limit or temporary capacity error, it tries the Groq keys; if those also fail, it tries OpenAI. Add `OPENAI_API_KEY` as a GitHub repository secret for the final fallback. The default OpenAI model is `gpt-4o-mini`.
+For normal AI questions, the bot uses this automatic order: **Gemini → Groq key pool → ChatGPT/OpenAI**. If Gemini returns a quota/rate-limit or temporary capacity error, it tries the Groq keys; if those also fail, it tries OpenAI. The Groq fallback uses `llama-3.1-8b-instant` by default. Add `OPENAI_API_KEY` as a GitHub repository secret for the final fallback. The default OpenAI model is `gpt-4o-mini`; an OpenAI `429` means that key has no usable quota/billing capacity and cannot be fixed by the bot code.
 
 Add one or more Groq secrets named `GROQ_API_KEY`, `GROQ_API_KEY_2`, `GROQ_API_KEY_3`, and so on up to `_10`. The bot uses them in numeric order and automatically tries the next key if a Groq key fails. Use underscores only; names such as `GROQ_API_KEY-3,4` are not supported. Leaving optional fallback secrets empty simply skips that provider.
 
