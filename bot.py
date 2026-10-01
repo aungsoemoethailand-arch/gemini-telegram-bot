@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from telegram import Update
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ChatType
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -22,6 +22,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "12"))
+ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0") or "0")
 
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("TELEGRAM_BOT_TOKEN is missing. Add it to .env")
@@ -36,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 user_history: dict[int, list[types.Content]] = defaultdict(list)
+allowed_user_ids: set[int] = {ADMIN_TELEGRAM_ID} if ADMIN_TELEGRAM_ID else set()
+known_usernames: dict[str, int] = {}
 
 SYSTEM_INSTRUCTION = (
     "You are a helpful Telegram assistant. Answer clearly and concisely. "
@@ -97,6 +100,71 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the sender's numeric Telegram ID for admin setup."""
+    user = update.effective_user
+    username = f"@{user.username}" if user.username else "(no username)"
+    await update.message.reply_text(f"Your Telegram ID: {user.id}\nUsername: {username}")
+
+
+def remember_user(update: Update) -> None:
+    user = update.effective_user
+    if user and user.username:
+        known_usernames[user.username.casefold()] = user.id
+
+
+def is_admin(user_id: int) -> bool:
+    return bool(ADMIN_TELEGRAM_ID and user_id == ADMIN_TELEGRAM_ID)
+
+
+def parse_target_id(value: str) -> int | None:
+    value = value.strip()
+    if value.startswith("@"):
+        return known_usernames.get(value[1:].casefold())
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+async def allow_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if update.effective_chat.type != ChatType.PRIVATE or not is_admin(user_id):
+        await update.message.reply_text("ဒီ command ကို admin က bot DM မှာပဲ သုံးနိုင်ပါတယ်။")
+        return
+    if not context.args:
+        await update.message.reply_text("သုံးပုံ: /allow <Telegram ID> သို့မဟုတ် /allow @username")
+        return
+    target = parse_target_id(context.args[0])
+    if target is None:
+        await update.message.reply_text(
+            "ဒီ username ကို မတွေ့ပါ။ User က bot ကိုအရင် message ပို့စေပြီး /allow @username ပြန်လုပ်ပါ၊ "
+            "သို့မဟုတ် numeric Telegram ID သုံးပါ။"
+        )
+        return
+    allowed_user_ids.add(target)
+    await update.message.reply_text(f"Allowed user: {target}")
+
+
+async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if update.effective_chat.type != ChatType.PRIVATE or not is_admin(user_id):
+        await update.message.reply_text("ဒီ command ကို admin က bot DM မှာပဲ သုံးနိုင်ပါတယ်။")
+        return
+    if not context.args:
+        await update.message.reply_text("သုံးပုံ: /remove <Telegram ID> သို့မဟုတ် /remove @username")
+        return
+    target = parse_target_id(context.args[0])
+    if target is None:
+        await update.message.reply_text("User မတွေ့ပါ။ Numeric Telegram ID သုံးပါ။")
+        return
+    if target == ADMIN_TELEGRAM_ID:
+        await update.message.reply_text("Admin ကို remove လုပ်လို့မရပါ။")
+        return
+    allowed_user_ids.discard(target)
+    await update.message.reply_text(f"Removed user: {target}")
+
+
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_history.pop(update.effective_user.id, None)
     await update.message.reply_text("စကားဝိုင်းမှတ်တမ်းကို ဖျက်ပြီးပါပြီ။")
@@ -107,6 +175,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     user_id = update.effective_user.id
+    remember_user(update)
+
+    is_group = update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+    bot_username = (context.bot.username or "").casefold()
+    mentioned = bot_username and f"@{bot_username}" in update.message.text.casefold()
+    if is_group and not mentioned:
+        return
+    if not is_admin(user_id) and user_id not in allowed_user_ids:
+        await update.message.reply_text("ခွင့်ပြုထားသော user မဟုတ်ပါ။ Admin ကို DM မှာ ဆက်သွယ်ပါ။")
+        return
+
     prompt = update.message.text.strip()
     if not prompt:
         return
@@ -138,6 +217,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 def main() -> None:
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("myid", my_id))
+    application.add_handler(CommandHandler("allow", allow_user))
+    application.add_handler(CommandHandler("remove", remove_user))
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot started with model %s", GEMINI_MODEL)
