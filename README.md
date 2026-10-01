@@ -63,6 +63,13 @@ In groups, authorized users can search in any of these ways:
 
 The bot searches the channel catalog first, and replies by mentioning the user who asked. If an `@YourBot ...` query has no catalog match, it is handled as a normal Gemini question.
 
+Channel posts support two separate modes:
+
+1. Link catalog: `စာရေးသူ - စာအုပ်နာမည် - စာအုပ်လင့်`
+2. Original review text: start the post with hashtags such as `#bookreview #သစ်စိုး #ပဉ္စလက်ကကြိုး`, then write the full annotation/review below. `/ask ပဉ္စလက်ကကြိုး` returns this Channel review text directly.
+
+Channel reviews are checked before the public website, so your own newly posted annotation is the source used for answers. The public Review site/GitHub-generated index remains a fallback for reviews that have not yet been posted into the Channel.
+
 For the original annotation posted in the Channel, use `/ask` or mention the bot with the book name:
 
 ```text

@@ -134,6 +134,21 @@ def extract_book_records(text: str) -> list[tuple[str, str, str]]:
     return [extract_book_fields(text)]
 
 
+def extract_hashtag_review(text: str) -> tuple[str, str, str] | None:
+    """Parse #bookreview #author #title posts and keep the full review text."""
+    tags = re.findall(r"#([^\s#]+)", text)
+    if not tags or not any(tag.casefold() in {"bookreview", "review", "စာအုပ်အညွှန်း"} for tag in tags):
+        return None
+    meaningful = [tag for tag in tags if tag.casefold() not in {"bookreview", "review", "စာအုပ်အညွှန်း"}]
+    if not meaningful:
+        return None
+    author = meaningful[0] if len(meaningful) >= 2 else ""
+    title = meaningful[1] if len(meaningful) >= 2 else meaningful[0]
+    link_match = re.search(r"https?://\S+", text)
+    link = link_match.group(0).rstrip(")],။၊") if link_match else ""
+    return author, title, link
+
+
 def message_link(chat_id: int, message_id: int) -> str:
     if str(chat_id).startswith("-100"):
         return f"https://t.me/c/{str(chat_id)[4:]}/{message_id}"
@@ -151,13 +166,25 @@ def save_records(chat_id: int, message_id: int, records: list[tuple[str, str, st
                ON CONFLICT(chat_id, message_id, record_no) DO UPDATE SET
                  author=excluded.author, title=excluded.title, link=excluded.link,
                  raw_text=excluded.raw_text, record_no=excluded.record_no""",
-            (chat_id, message_id, author, title, link, record_text or fallback_text, record_no),
+            (chat_id, message_id, author, title, link,
+             fallback_text if len(fallback_text) > len(record_text) else (record_text or fallback_text),
+             record_no),
             )
 
 
 def save_channel_post(message) -> None:
     text = (message.text or message.caption or "").strip()
     if text:
+        hashtag_review = extract_hashtag_review(text)
+        if hashtag_review:
+            author, title, link = hashtag_review
+            save_records(
+                message.chat_id,
+                message.message_id,
+                [(author, title, link or message_link(message.chat_id, message.message_id))],
+                text,
+            )
+            return
         save_records(
             message.chat_id,
             message.message_id,
@@ -310,6 +337,11 @@ def find_catalog_mentions(text: str, limit: int = 5) -> list[tuple[str, str, str
         if len(matches) >= limit:
             break
     return matches
+
+
+def find_local_reviews(query: str) -> list[tuple[str, str, str, str]]:
+    matches = find_catalog_mentions(query, limit=10)
+    return [row for row in matches if "#bookreview" in row[3].casefold() or len(row[3]) > len(" - ".join(row[:3])) + 80]
 
 
 def is_book_question(text: str) -> bool:
@@ -562,8 +594,9 @@ async def search_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def ask_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     question = " ".join(context.args).strip()
+    local_reviews = find_local_reviews(question)
     review_results = await asyncio.to_thread(lookup_reviews, question)
-    results = review_results or find_catalog_mentions(question) or search_catalog(question)
+    results = local_reviews or review_results or find_catalog_mentions(question) or search_catalog(question)
     if not question or not results:
         await reply_with_mention(update, "စာအုပ်နာမည်ပါအောင် မေးပါ။ ဥပမာ /ask စာအုပ်နာမည် အကြောင်းအရာ ဘာလဲ")
         return
@@ -629,7 +662,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     catalog_query = search_query_from_text(prompt, bot_username)
-    mentioned_books = await asyncio.to_thread(lookup_reviews, prompt)
+    local_reviews = find_local_reviews(prompt)
+    mentioned_books = local_reviews or await asyncio.to_thread(lookup_reviews, prompt)
     mentioned_books = mentioned_books or find_catalog_mentions(prompt)
     if is_book_question(prompt) and mentioned_books:
         try:
