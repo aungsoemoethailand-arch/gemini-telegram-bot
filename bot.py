@@ -299,7 +299,8 @@ async def send_search_results(
         if author:
             lines.append(f"စာရေးသူ: {html.escape(author)}")
         if link:
-            buttons.append([InlineKeyboardButton(f"🔗 {index} စာအုပ်လင့် ဖွင့်ရန်", url=link)])
+            button_title = re.sub(r"\s+", " ", display_title).strip()[:48]
+            buttons.append([InlineKeyboardButton(f"📖 {button_title}", url=link)])
     if session_token and page > 0:
         buttons.append([InlineKeyboardButton("⬅️ နောက်ပြန်", callback_data=f"bookpage:{session_token}:{page - 1}")])
     if session_token and page < page_count - 1:
@@ -496,7 +497,11 @@ async def ask_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await answer_from_catalog(update, question, results)
     except Exception as exc:
         logger.exception("Catalog answer failed for user %s", user_id)
-        await reply_with_mention(update, f"အညွှန်းကို ဖြေရာမှာ အခက်အခဲရှိပါတယ်: {type(exc).__name__}")
+        await reply_with_mention(
+            update,
+            "အညွှန်းကို Gemini နဲ့ ဖြေရာမှာ ယာယီအခက်အခဲရှိလို့ catalog ထဲက စာအုပ်အချက်အလက်ကို ပြပေးထားပါတယ်ရှင်။"
+        )
+        await send_search_results(update, results, search_query=question)
 
 
 async def short_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -556,7 +561,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await answer_from_catalog(update, prompt, mentioned_books)
         except Exception as exc:
             logger.exception("Catalog answer failed for user %s", user_id)
-            await reply_with_mention(update, f"အညွှန်းကို ဖြေရာမှာ အခက်အခဲရှိပါတယ်: {type(exc).__name__}")
+            await reply_with_mention(
+                update,
+                "အညွှန်းကို Gemini နဲ့ ဖြေရာမှာ ယာယီအခက်အခဲရှိလို့ catalog ထဲက စာအုပ်အချက်အလက်ကို ပြပေးထားပါတယ်ရှင်။"
+            )
+            await send_search_results(update, mentioned_books, search_query=prompt)
         return
     catalog_results = search_catalog(catalog_query, limit=None) if catalog_query else []
     if catalog_results:
