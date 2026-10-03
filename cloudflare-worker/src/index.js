@@ -27,7 +27,9 @@ function stripHtml(html) {
 }
 
 async function reviewMatches(query) {
-  const needle = normalize(query);
+  const cleanedQuery = String(query || "").replace(/(?:အကြောင်းအရာ|အညွှန်း|အကြောင်း|review|summary|ဘာလဲ)/gi, " ").trim();
+  const needle = normalize(cleanedQuery);
+  const terms = cleanedQuery.split(/\s+/).map(normalize).filter((term) => term.length > 1);
   if (!needle) return [];
   try {
     const response = await fetch(`${REVIEW_SITE_BASE}assets/posts.json`, { headers: { "user-agent": "gemini-telegram-webhook/1.0" } });
@@ -35,9 +37,10 @@ async function reviewMatches(query) {
     const posts = await response.json();
     const ranked = (posts || []).map((post) => {
       const haystack = normalize([post.title, post.author, post.excerpt].join(" "));
-      const score = haystack.includes(needle) ? 1 : 0;
+      const matched = terms.filter((term) => haystack.includes(term)).length;
+      const score = haystack.includes(needle) ? 1 : (terms.length ? matched / terms.length : 0);
       return { post, score };
-    }).filter((item) => item.score > 0).slice(0, 5);
+    }).filter((item) => item.score >= (terms.length > 1 ? 0.5 : 1)).sort((a, b) => b.score - a.score).slice(0, 5);
     const results = [];
     for (const { post } of ranked) {
       const link = new URL(String(post.link || ""), REVIEW_SITE_BASE).toString();
@@ -56,7 +59,8 @@ async function reviewMatches(query) {
 }
 
 async function localReviewMatches(env, query) {
-  const needle = normalize(query);
+  const cleanedQuery = String(query || "").replace(/(?:အကြောင်းအရာ|အညွှန်း|အကြောင်း|review|summary|ဘာလဲ)/gi, " ").trim();
+  const needle = normalize(cleanedQuery);
   const rows = await env.DB.prepare("SELECT author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
   return (rows.results || []).filter((row) => {
     const raw = String(row.raw_text || "");
@@ -287,15 +291,35 @@ async function searchExactBook(env, query) {
   return (rows.results || []).filter((row) => normalize(row.author) === needle || normalize(row.title) === needle).slice(0, MAX_BOOK_RESULTS);
 }
 
-async function sendSearch(env, chatId, query, cleanup = {}) {
-  const rows = await searchBooks(env, query);
+async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = false, token = "") {
+  const rows = exact ? await searchExactBook(env, query) : await searchBooks(env, query);
   if (!rows.length) return sendMessage(env, chatId, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။", cleanup);
-  const text = `<b>📚 ရှာဖွေမှုရလဒ် (${rows.length} ခု)</b>`;
-  const buttons = rows.filter((row) => row.link).map((row, i) => [{
-    text: `📖 ${`${i + 1}. ${row.title || "စာအုပ်"}${row.author ? ` — ${row.author}` : ""}`.slice(0, 60)}`,
-    url: row.link,
-  }]);
-  return sendMessage(env, chatId, text, { ...cleanup, reply_markup: { inline_keyboard: buttons } });
+  const pageSize = 5;
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+  const safePage = Math.max(0, Math.min(Number(page) || 0, pageCount - 1));
+  const visible = rows.slice(safePage * pageSize, (safePage + 1) * pageSize);
+  const lines = [`<b>📚 ရှာဖွေမှုရလဒ် (${rows.length} ခု)</b>`, `စာမျက်နှာ ${safePage + 1}/${pageCount}`];
+  const buttons = [];
+  visible.forEach((row, index) => {
+    const number = safePage * pageSize + index + 1;
+    lines.push(`\n<b>${number}. ${escapeHtml(row.title || "ခေါင်းစဉ်မရှိ")}</b>${row.author ? ` — ${escapeHtml(row.author)}` : ""}`);
+    if (row.link) buttons.push([{ text: `📖 ${`${number}. ${row.title || "စာအုပ်"}`.slice(0, 58)}`, url: row.link }]);
+  });
+  if (pageCount > 1) {
+    const nav = [];
+    if (safePage > 0) nav.push({ text: "⬅️ နောက်ပြန်", callback_data: `search:${token}:${safePage - 1}` });
+    if (safePage < pageCount - 1) nav.push({ text: "ရှေ့ဆက် ➡️", callback_data: `search:${token}:${safePage + 1}` });
+    buttons.push(nav);
+  }
+  return sendMessage(env, chatId, lines.join("\n"), { ...cleanup, reply_markup: { inline_keyboard: buttons } });
+}
+
+async function sendSearch(env, chatId, query, cleanup = {}, exact = false) {
+  const token = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+  const storedQuery = `${exact ? "__exact__" : "__fuzzy__"}${query}`;
+  await env.DB.prepare("INSERT OR REPLACE INTO search_sessions(token,query,created_at) VALUES(?,?,?)")
+    .bind(token, storedQuery, Math.floor(Date.now() / 1000)).run();
+  return sendSearchPage(env, chatId, query, 0, cleanup, exact, token);
 }
 
 async function catalogPage(env, chatId, kind, page, cleanup = {}) {
@@ -405,15 +429,8 @@ async function handleMessage(env, message) {
   const isGroup = ["group", "supergroup"].includes(message.chat?.type);
   const replyTarget = message.reply_to_message;
   if (isGroup && replyTarget?.from && !replyTarget.from.is_bot) return;
-  const rows = isGroup ? await searchExactBook(env, text) : await searchBooks(env, text);
-  if (!rows.length) return null;
-  const result = rows.map((row, i) => `${i + 1}. <b>${escapeHtml(row.title || "ခေါင်းစဉ်မရှိ")}</b>${row.author ? ` — ${escapeHtml(row.author)}` : ""}\n<a href="${escapeHtml(row.link)}">📖 ဖတ်ရန် / ရယူရန်</a>`).join("\n\n");
-  const buttons = rows.filter((row) => row.link).map((row, i) => [{
-    text: `📖 ${`${i + 1}. ${row.title || "စာအုပ်"}${row.author ? ` — ${row.author}` : ""}`.slice(0, 60)}`,
-    url: row.link,
-  }]);
   const cleanup = isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {};
-  return sendMessage(env, message.chat.id, `<b>📚 ရှာဖွေမှုရလဒ် (${rows.length} ခု)</b>\n\n${result}`, { ...cleanup, reply_markup: { inline_keyboard: buttons } });
+  return sendSearch(env, message.chat.id, text, cleanup, isGroup);
 }
 
 async function handleCallback(env, query) {
@@ -425,6 +442,15 @@ async function handleCallback(env, query) {
   if (action === "help_authors") return handleCommand(env, { chat: message.chat, text: "/authors" });
   if (action === "help_books") return handleCommand(env, { chat: message.chat, text: "/books" });
   if (action === "help_stats") return handleCommand(env, { chat: message.chat, text: "/stats" });
+  const searchMatch = String(action || "").match(/^search:([a-z0-9]+):(\d+)$/);
+  if (searchMatch) {
+    const session = await env.DB.prepare("SELECT query FROM search_sessions WHERE token=? AND created_at>? ").bind(searchMatch[1], Math.floor(Date.now() / 1000) - 86400).first();
+    if (!session) return sendMessage(env, message.chat.id, "ဒီရှာဖွေမှု button သက်တမ်းကုန်သွားပါပြီ။ ပြန်ရှာပါ။");
+    const stored = String(session.query || "");
+    const exact = stored.startsWith("__exact__");
+    const query = stored.replace(/^__(?:exact|fuzzy)__/, "");
+    return sendSearchPage(env, message.chat.id, query, Number(searchMatch[2]), {}, exact, searchMatch[1]);
+  }
   const catalogMatch = String(action || "").match(/^catalog:(authors|books):(\d+)$/);
   if (catalogMatch) return catalogPage(env, message.chat.id, catalogMatch[1], Number(catalogMatch[2]));
 }
