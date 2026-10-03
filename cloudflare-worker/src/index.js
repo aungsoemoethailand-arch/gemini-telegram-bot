@@ -86,7 +86,7 @@ async function telegram(env, method, body) {
 }
 
 async function ensureWebhook(env) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.WORKER_URL) return;
+  if (env.ENABLE_WEBHOOK !== "true" || !env.TELEGRAM_BOT_TOKEN || !env.WORKER_URL) return;
   await telegram(env, "setWebhook", {
     url: env.WORKER_URL,
     secret_token: env.TELEGRAM_SECRET_TOKEN || undefined,
