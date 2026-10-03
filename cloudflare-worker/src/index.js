@@ -85,6 +85,15 @@ async function telegram(env, method, body) {
   return response.json();
 }
 
+async function ensureWebhook(env) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.WORKER_URL) return;
+  await telegram(env, "setWebhook", {
+    url: env.WORKER_URL,
+    secret_token: env.TELEGRAM_SECRET_TOKEN || undefined,
+    allowed_updates: ["message", "channel_post"],
+  });
+}
+
 async function sendMessage(env, chatId, text, extra = {}) {
   return telegram(env, "sendMessage", {
     chat_id: chatId,
@@ -172,6 +181,10 @@ async function handleCommand(env, message) {
 }
 
 export default {
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(ensureWebhook(env));
+  },
+
   async fetch(request, env, ctx) {
     try {
       if (request.method === "GET") return new Response("gemini-telegram-webhook is running");
