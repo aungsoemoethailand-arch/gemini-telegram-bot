@@ -992,7 +992,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "<b>📚 အသုံးပြုပုံလေးပါရှင်</b>\n\n"
         "<b>စာအုပ် link ရှာရန်</b>\n/search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ\n\n"
-        "<b>စာရင်းအပြည့်အစုံ</b>\n/authors — စာရေးသူများနှင့် စာအုပ်အရေအတွက်\n/books — စာအုပ်များနှင့် link ခလုတ်များ\n\n"
+        "<b>စာရင်းအပြည့်အစုံ</b>\n/authors — စာရေးသူများနှင့် စာအုပ်အရေအတွက်\n/books — စာအုပ်များနှင့် link ခလုတ်များ\n/stats — catalog အရေအတွက်စာရင်း\n\n"
         "<b>မူရင်းအညွှန်းဖတ်ရန်</b>\n/ask စာအုပ်နာမည်\n\n"
         "Group ထဲမှာတော့ @YourBot နဲ့ mention လုပ်ပြီး မေးလို့ရပါတယ်ရှင် 💜",
         parse_mode="HTML",
@@ -1120,6 +1120,27 @@ async def list_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await reply_with_mention(update, "စာအုပ်စာရင်း မရှိသေးပါ။")
         return
     await send_catalog_page(update, "books", items)
+
+
+async def catalog_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    authors = await asyncio.to_thread(catalog_list_items, "authors")
+    books = await asyncio.to_thread(catalog_list_items, "books")
+    if not authors and not books:
+        await reply_with_mention(update, "Catalog စာရင်း မရှိသေးပါ။")
+        return
+    top_authors = sorted(authors, key=lambda item: int(item[1]), reverse=True)[:10]
+    lines = [
+        "<b>📊 Catalog စာရင်းအခြေအနေ</b>",
+        f"📚 စာအုပ်စုစုပေါင်း: <b>{len(books)}</b> အုပ်",
+        f"✍️ စာရေးသူစုစုပေါင်း: <b>{len(authors)}</b> ဦး",
+    ]
+    if top_authors:
+        lines.append("\n<b>စာအုပ်အများဆုံးရှိတဲ့ စာရေးသူများ</b>")
+        lines.extend(
+            f"{index}. {html.escape(author)} — {count} အုပ်"
+            for index, (author, count) in enumerate(top_authors, 1)
+        )
+    await reply_with_mention(update, "\n".join(lines))
 
 
 async def ask_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1259,6 +1280,7 @@ def main() -> None:
     application.add_handler(CommandHandler("author", list_authors))
     application.add_handler(CommandHandler("authors", list_authors))
     application.add_handler(CommandHandler("books", list_books))
+    application.add_handler(CommandHandler("stats", catalog_stats))
     application.add_handler(CommandHandler("ask", ask_books))
     application.add_handler(CallbackQueryHandler(handle_search_page, pattern=r"^bookpage:"))
     application.add_handler(CallbackQueryHandler(handle_catalog_page, pattern=r"^catalogpage:"))
