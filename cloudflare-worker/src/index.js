@@ -246,6 +246,39 @@ async function sendSearch(env, chatId, query, cleanup = {}) {
   return sendMessage(env, chatId, text, { ...cleanup, reply_markup: { inline_keyboard: buttons } });
 }
 
+async function catalogPage(env, chatId, kind, page, cleanup = {}) {
+  const pageSize = 20;
+  let items;
+  if (kind === "authors") {
+    const rows = await env.DB.prepare("SELECT author,COUNT(*) AS count FROM books WHERE author<>'' GROUP BY author ORDER BY author LIMIT 2000").all();
+    items = rows.results || [];
+  } else {
+    const rows = await env.DB.prepare("SELECT title,author,link FROM books WHERE title<>'' ORDER BY title LIMIT 2000").all();
+    items = rows.results || [];
+  }
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const safePage = Math.max(0, Math.min(Number(page) || 0, pageCount - 1));
+  const visible = items.slice(safePage * pageSize, (safePage + 1) * pageSize);
+  const title = kind === "authors" ? "စာရေးသူစာရင်း" : "စာအုပ်စာရင်း";
+  const lines = [`<b>📚 ${title} (${items.length} ခု)</b>`, `စာမျက်နှာ ${safePage + 1}/${pageCount}`];
+  const buttons = [];
+  visible.forEach((row, index) => {
+    if (kind === "authors") {
+      lines.push(`\n<b>${safePage * pageSize + index + 1}. ${escapeHtml(row.author)}</b> — စာအုပ် ${row.count} အုပ်`);
+    } else {
+      lines.push(`\n<b>${safePage * pageSize + index + 1}. ${escapeHtml(row.title)}</b>${row.author ? `\nစာရေးသူ: ${escapeHtml(row.author)}` : ""}`);
+      if (row.link) buttons.push([{ text: `📖 ${String(row.title).slice(0, 52)}`, url: row.link }]);
+    }
+  });
+  if (safePage > 0 || safePage < pageCount - 1) {
+    const navigation = [];
+    if (safePage > 0) navigation.push({ text: "⬅️ နောက်ပြန်", callback_data: `catalog:${kind}:${safePage - 1}` });
+    if (safePage < pageCount - 1) navigation.push({ text: "ရှေ့ဆက် ➡️", callback_data: `catalog:${kind}:${safePage + 1}` });
+    buttons.push(navigation);
+  }
+  return sendMessage(env, chatId, lines.join("\n"), { ...cleanup, ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}) });
+}
+
 async function handleCommand(env, message) {
   const text = String(message.text || "").trim();
   const [rawCommand, ...args] = text.split(/\s+/);
@@ -281,14 +314,10 @@ async function handleCommand(env, message) {
     return reply(`Removed user: <code>${escapeHtml(target)}</code>`);
   }
   if (command === "/authors") {
-    const rows = await env.DB.prepare("SELECT author,COUNT(*) AS count FROM books WHERE author<>'' GROUP BY author ORDER BY count DESC,author LIMIT 100").all();
-    const text = (rows.results || []).map((row, i) => `${i + 1}. <b>${escapeHtml(row.author)}</b> — ${row.count} အုပ်`).join("\n");
-    return reply(text || "စာရေးသူစာရင်း မရှိသေးပါ။");
+    return catalogPage(env, chatId, "authors", 0, cleanup);
   }
   if (command === "/books") {
-    const rows = await env.DB.prepare("SELECT title,author,link FROM books ORDER BY id DESC LIMIT 100").all();
-    const buttons = (rows.results || []).filter((row) => row.link).map((row) => [{ text: `${row.title || "စာအုပ်"}${row.author ? ` — ${row.author}` : ""}`.slice(0, 60), url: row.link }]);
-    return reply(buttons.length ? "<b>📚 စာအုပ်စာရင်း</b>\nအောက်က စာအုပ်ကို ရွေးပါရှင်။" : "စာအုပ်စာရင်း မရှိသေးပါ။", buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {});
+    return catalogPage(env, chatId, "books", 0, cleanup);
   }
   if (command === "/stats") {
     const row = await env.DB.prepare("SELECT COUNT(*) AS books,COUNT(DISTINCT NULLIF(author,'')) AS authors FROM books").first();
@@ -325,6 +354,8 @@ async function handleCallback(env, query) {
   if (action === "help_authors") return handleCommand(env, { chat: message.chat, text: "/authors" });
   if (action === "help_books") return handleCommand(env, { chat: message.chat, text: "/books" });
   if (action === "help_stats") return handleCommand(env, { chat: message.chat, text: "/stats" });
+  const catalogMatch = String(action || "").match(/^catalog:(authors|books):(\d+)$/);
+  if (catalogMatch) return catalogPage(env, message.chat.id, catalogMatch[1], Number(catalogMatch[2]));
 }
 
 export default {
