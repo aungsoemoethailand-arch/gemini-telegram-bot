@@ -12,6 +12,58 @@ function normalize(value) {
   return String(value ?? "").toLowerCase().normalize("NFKC").replace(/[\s\-–—_.,၊။:;!?()[\]{}"'`]+/g, "");
 }
 
+const REVIEW_SITE_BASE = "https://whispermmepub.github.io/Review/";
+
+function stripHtml(html) {
+  return String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<br\s*\/?\s*>/gi, "\n")
+    .replace(/<\/(?:p|div|h[1-6]|li|blockquote)>/gi, "\n\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/[ \t]+/g, " ").replace(/\n[ \t]+/g, "\n").replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function reviewMatches(query) {
+  const needle = normalize(query);
+  if (!needle) return [];
+  try {
+    const response = await fetch(`${REVIEW_SITE_BASE}assets/posts.json`, { headers: { "user-agent": "gemini-telegram-webhook/1.0" } });
+    if (!response.ok) return [];
+    const posts = await response.json();
+    const ranked = (posts || []).map((post) => {
+      const haystack = normalize([post.title, post.author, post.excerpt].join(" "));
+      const score = haystack.includes(needle) ? 1 : 0;
+      return { post, score };
+    }).filter((item) => item.score > 0).slice(0, 5);
+    const results = [];
+    for (const { post } of ranked) {
+      const link = new URL(String(post.link || ""), REVIEW_SITE_BASE).toString();
+      let body = String(post.excerpt || "");
+      try {
+        const detail = await fetch(link, { headers: { "user-agent": "gemini-telegram-webhook/1.0" } });
+        if (detail.ok) body = stripHtml(await detail.text());
+      } catch {}
+      results.push({ author: post.author || "", title: post.title || "", link, body: body.slice(0, 3500) });
+    }
+    return results;
+  } catch (error) {
+    console.error("Review lookup failed", error?.message || "unknown error");
+    return [];
+  }
+}
+
+async function localReviewMatches(env, query) {
+  const needle = normalize(query);
+  const rows = await env.DB.prepare("SELECT author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
+  return (rows.results || []).filter((row) => {
+    const raw = String(row.raw_text || "");
+    return raw.length > String(row.author || "").length + String(row.title || "").length + 80 && (normalize(row.author).includes(needle) || normalize(row.title).includes(needle) || normalize(raw).includes(needle));
+  }).slice(0, 5).map((row) => ({ author: row.author || "", title: row.title || "", link: row.link || "", body: String(row.raw_text || "").slice(0, 3500) }));
+}
+
 function messageLink(chatId, messageId) {
   const id = String(chatId);
   return id.startsWith("-100") ? `https://t.me/c/${id.slice(4)}/${messageId}` : "";
@@ -149,7 +201,7 @@ async function ensureWebhook(env) {
   await telegram(env, "setWebhook", {
     url: env.WORKER_URL,
     secret_token: env.TELEGRAM_SECRET_TOKEN || undefined,
-    allowed_updates: ["message", "channel_post"],
+    allowed_updates: ["message", "channel_post", "callback_query"],
   });
 }
 
@@ -279,6 +331,19 @@ async function catalogPage(env, chatId, kind, page, cleanup = {}) {
   return sendMessage(env, chatId, lines.join("\n"), { ...cleanup, ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}) });
 }
 
+async function sendReviews(env, chatId, query, reviews, cleanup = {}) {
+  if (!reviews.length) return sendMessage(env, chatId, "ဒီစာအုပ်အတွက် review မတွေ့ပါ။", cleanup);
+  const lines = [`<b>📖 မူရင်းအညွှန်း (${reviews.length} ခု)</b>`];
+  const buttons = [];
+  reviews.forEach((review, index) => {
+    lines.push(`\n<b>${index + 1}. ${escapeHtml(review.title || query)}</b>`);
+    if (review.author) lines.push(`စာရေးသူ: ${escapeHtml(review.author)}`);
+    if (review.body) lines.push(`\n${escapeHtml(review.body)}`);
+    if (review.link) buttons.push([{ text: `📖 ${String(review.title || query).slice(0, 52)}`, url: review.link }]);
+  });
+  return sendMessage(env, chatId, lines.join("\n"), { ...cleanup, ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}) });
+}
+
 async function handleCommand(env, message) {
   const text = String(message.text || "").trim();
   const [rawCommand, ...args] = text.split(/\s+/);
@@ -295,6 +360,12 @@ async function handleCommand(env, message) {
   }
   if (command === "/search" || command === "/find") {
     return query ? sendSearch(env, chatId, query, cleanup) : reply("သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
+  }
+  if (command === "/ask") {
+    if (!query) return reply("သုံးပုံ: /ask စာအုပ်နာမည်");
+    const local = await localReviewMatches(env, query);
+    const reviews = local.length ? local : await reviewMatches(query);
+    return sendReviews(env, chatId, query, reviews, cleanup);
   }
   if (command === "/author") return handleCommand(env, { ...message, text: "/authors" });
   if (command === "/myid") {
