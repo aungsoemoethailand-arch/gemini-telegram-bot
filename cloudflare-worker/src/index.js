@@ -494,6 +494,7 @@ async function handleCallback(env, query) {
   const action = query.data;
   const message = query.message;
   if (!message) return;
+  await rememberChat(env, message.chat);
   if (action === "help_search") return sendMessage(env, message.chat.id, "သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
   if (action === "help_authors") return handleCommand(env, { chat: message.chat, text: "/authors" });
   if (action === "help_books") return handleCommand(env, { chat: message.chat, text: "/books" });
