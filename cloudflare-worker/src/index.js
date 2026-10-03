@@ -174,8 +174,12 @@ async function searchExactBook(env, query) {
 async function sendSearch(env, chatId, query) {
   const rows = await searchBooks(env, query);
   if (!rows.length) return sendMessage(env, chatId, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။");
-  const text = rows.map((row, i) => `${i + 1}. <b>${escapeHtml(row.title || "ခေါင်းစဉ်မရှိ")}</b>${row.author ? ` — ${escapeHtml(row.author)}` : ""}\n<a href="${escapeHtml(row.link)}">📖 ဖတ်ရန် / ရယူရန်</a>`).join("\n\n");
-  return sendMessage(env, chatId, text);
+  const text = `<b>📚 ရှာဖွေမှုရလဒ် (${rows.length} ခု)</b>`;
+  const buttons = rows.filter((row) => row.link).map((row, i) => [{
+    text: `📖 ${`${i + 1}. ${row.title || "စာအုပ်"}${row.author ? ` — ${row.author}` : ""}`.slice(0, 60)}`,
+    url: row.link,
+  }]);
+  return sendMessage(env, chatId, text, { reply_markup: { inline_keyboard: buttons } });
 }
 
 async function handleCommand(env, message) {
@@ -185,7 +189,10 @@ async function handleCommand(env, message) {
   const query = args.join(" ").trim();
   const chatId = message.chat.id;
   if (command === "/start" || command === "/help") {
-    return sendMessage(env, chatId, "<b>📚 စာအုပ်ရှာဖွေရေး Bot</b>\n\n/search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ\n/authors — စာရေးသူများနှင့် အရေအတွက်\n/books — စာအုပ်များနှင့် link ခလုတ်များ\n/stats — catalog အရေအတွက်");
+    return sendMessage(env, chatId, "<b>📚 စာအုပ်ရှာဖွေရေး Bot</b>\n\nအောက်က menu ကနေ ရွေးနိုင်ပါတယ်ရှင်။", { reply_markup: { inline_keyboard: [
+      [{ text: "🔎 စာအုပ်ရှာမယ်", callback_data: "help_search" }, { text: "✍️ စာရေးသူများ", callback_data: "help_authors" }],
+      [{ text: "📚 စာအုပ်များ", callback_data: "help_books" }, { text: "📊 အခြေအနေ", callback_data: "help_stats" }],
+    ] } });
   }
   if (command === "/search" || command === "/find") {
     return query ? sendSearch(env, chatId, query) : sendMessage(env, chatId, "သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
@@ -217,7 +224,22 @@ async function handleMessage(env, message) {
   const rows = isGroup ? await searchExactBook(env, text) : await searchBooks(env, text);
   if (!rows.length) return null;
   const result = rows.map((row, i) => `${i + 1}. <b>${escapeHtml(row.title || "ခေါင်းစဉ်မရှိ")}</b>${row.author ? ` — ${escapeHtml(row.author)}` : ""}\n<a href="${escapeHtml(row.link)}">📖 ဖတ်ရန် / ရယူရန်</a>`).join("\n\n");
-  return sendMessage(env, message.chat.id, result);
+  const buttons = rows.filter((row) => row.link).map((row, i) => [{
+    text: `📖 ${`${i + 1}. ${row.title || "စာအုပ်"}${row.author ? ` — ${row.author}` : ""}`.slice(0, 60)}`,
+    url: row.link,
+  }]);
+  return sendMessage(env, message.chat.id, `<b>📚 ရှာဖွေမှုရလဒ် (${rows.length} ခု)</b>\n\n${result}`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function handleCallback(env, query) {
+  await telegram(env, "answerCallbackQuery", { callback_query_id: query.id });
+  const action = query.data;
+  const message = query.message;
+  if (!message) return;
+  if (action === "help_search") return sendMessage(env, message.chat.id, "သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
+  if (action === "help_authors") return handleCommand(env, { chat: message.chat, text: "/authors" });
+  if (action === "help_books") return handleCommand(env, { chat: message.chat, text: "/books" });
+  if (action === "help_stats") return handleCommand(env, { chat: message.chat, text: "/stats" });
 }
 
 export default {
@@ -235,6 +257,8 @@ export default {
       const update = await request.json();
       if (update.channel_post) {
         ctx.waitUntil(importChannelPost(env, update.channel_post).catch((error) => console.error("Channel import failed", error?.message || "unknown error")));
+      } else if (update.callback_query) {
+        ctx.waitUntil(handleCallback(env, update.callback_query).catch((error) => console.error("Callback failed", error?.message || "unknown error")));
       } else if (update.message?.text) {
         ctx.waitUntil(handleMessage(env, update.message).catch((error) => console.error("Message handling failed", error?.message || "unknown error")));
       }
