@@ -17,6 +17,65 @@ function messageLink(chatId, messageId) {
   return id.startsWith("-100") ? `https://t.me/c/${id.slice(4)}/${messageId}` : "";
 }
 
+function isGroupMessage(message) {
+  return ["group", "supergroup"].includes(message?.chat?.type);
+}
+
+function autoDeleteEnabled(env) {
+  return env.AUTO_DELETE_ENABLED !== "false" && env.AUTO_DELETE_ENABLED !== "0";
+}
+
+function commandDeleteSeconds(env) {
+  return Math.max(0, Number(env.COMMAND_AUTO_DELETE_SECONDS || 30));
+}
+
+function resultDeleteSeconds(env) {
+  return Math.max(0, Number(env.AUTO_DELETE_MINUTES || 3) * 60);
+}
+
+function adminId(env) {
+  return String(env.ADMIN_TELEGRAM_ID || "").trim();
+}
+
+async function rememberUser(env, user) {
+  if (!user?.id) return;
+  await env.DB.prepare(
+    `INSERT INTO known_users(user_id,username,first_name,updated_at) VALUES(?,?,?,datetime('now'))
+     ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,first_name=excluded.first_name,updated_at=excluded.updated_at`
+  ).bind(user.id, user.username || "", user.first_name || user.last_name || "").run();
+}
+
+async function isAdmin(env, user) {
+  return Boolean(user?.id && adminId(env) && String(user.id) === adminId(env));
+}
+
+async function resolveUserId(env, value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (/^-?\d+$/.test(raw)) return raw;
+  const username = raw.replace(/^@/, "").toLowerCase();
+  const row = await env.DB.prepare("SELECT user_id FROM known_users WHERE lower(username)=?").bind(username).first();
+  return row?.user_id ? String(row.user_id) : null;
+}
+
+async function queueDelete(env, chatId, messageId, seconds) {
+  if (!autoDeleteEnabled(env) || !chatId || !messageId || seconds <= 0) return;
+  await env.DB.prepare("INSERT OR IGNORE INTO cleanup_tasks(chat_id,message_id,delete_at) VALUES(?,?,?)")
+    .bind(chatId, messageId, Math.floor(Date.now() / 1000) + seconds).run();
+}
+
+async function cleanupDue(env) {
+  if (!autoDeleteEnabled(env)) return;
+  const rows = await env.DB.prepare("SELECT id,chat_id,message_id FROM cleanup_tasks WHERE delete_at<=? LIMIT 100")
+    .bind(Math.floor(Date.now() / 1000)).all();
+  for (const row of rows.results || []) {
+    try { await telegram(env, "deleteMessage", { chat_id: row.chat_id, message_id: row.message_id }); } catch (error) {
+      console.log("Delete skipped", error?.message || "unknown error");
+    }
+    await env.DB.prepare("DELETE FROM cleanup_tasks WHERE id=?").bind(row.id).run();
+  }
+}
+
 function parseCsvLine(line) {
   const cells = [];
   let cell = "";
@@ -95,13 +154,18 @@ async function ensureWebhook(env) {
 }
 
 async function sendMessage(env, chatId, text, extra = {}) {
-  return telegram(env, "sendMessage", {
+  const { __deleteAfterSeconds, ...telegramExtra } = extra;
+  const result = await telegram(env, "sendMessage", {
     chat_id: chatId,
     text,
     parse_mode: "HTML",
     disable_web_page_preview: true,
-    ...extra,
+    ...telegramExtra,
   });
+  if (__deleteAfterSeconds && result.result?.message_id) {
+    await queueDelete(env, chatId, result.result.message_id, __deleteAfterSeconds);
+  }
+  return result;
 }
 
 async function telegramHealth(env) {
@@ -171,15 +235,15 @@ async function searchExactBook(env, query) {
   return (rows.results || []).filter((row) => normalize(row.author) === needle || normalize(row.title) === needle).slice(0, MAX_BOOK_RESULTS);
 }
 
-async function sendSearch(env, chatId, query) {
+async function sendSearch(env, chatId, query, cleanup = {}) {
   const rows = await searchBooks(env, query);
-  if (!rows.length) return sendMessage(env, chatId, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။");
+  if (!rows.length) return sendMessage(env, chatId, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။", cleanup);
   const text = `<b>📚 ရှာဖွေမှုရလဒ် (${rows.length} ခု)</b>`;
   const buttons = rows.filter((row) => row.link).map((row, i) => [{
     text: `📖 ${`${i + 1}. ${row.title || "စာအုပ်"}${row.author ? ` — ${row.author}` : ""}`.slice(0, 60)}`,
     url: row.link,
   }]);
-  return sendMessage(env, chatId, text, { reply_markup: { inline_keyboard: buttons } });
+  return sendMessage(env, chatId, text, { ...cleanup, reply_markup: { inline_keyboard: buttons } });
 }
 
 async function handleCommand(env, message) {
@@ -188,28 +252,47 @@ async function handleCommand(env, message) {
   const command = rawCommand.split("@")[0].toLowerCase();
   const query = args.join(" ").trim();
   const chatId = message.chat.id;
+  const cleanup = isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {};
+  const reply = (text, extra = {}) => sendMessage(env, chatId, text, { ...cleanup, ...extra });
   if (command === "/start" || command === "/help") {
-    return sendMessage(env, chatId, "<b>📚 စာအုပ်ရှာဖွေရေး Bot</b>\n\nအောက်က menu ကနေ ရွေးနိုင်ပါတယ်ရှင်။", { reply_markup: { inline_keyboard: [
+    return reply("<b>📚 စာအုပ်ရှာဖွေရေး Bot</b>\n\nအောက်က menu ကနေ ရွေးနိုင်ပါတယ်ရှင်။", { reply_markup: { inline_keyboard: [
       [{ text: "🔎 စာအုပ်ရှာမယ်", callback_data: "help_search" }, { text: "✍️ စာရေးသူများ", callback_data: "help_authors" }],
       [{ text: "📚 စာအုပ်များ", callback_data: "help_books" }, { text: "📊 အခြေအနေ", callback_data: "help_stats" }],
     ] } });
   }
   if (command === "/search" || command === "/find") {
-    return query ? sendSearch(env, chatId, query) : sendMessage(env, chatId, "သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
+    return query ? sendSearch(env, chatId, query, cleanup) : reply("သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
+  }
+  if (command === "/author") return handleCommand(env, { ...message, text: "/authors" });
+  if (command === "/myid") {
+    return reply(`Your Telegram ID: <code>${escapeHtml(message.from?.id || "မသိပါ")}</code>\nUsername: ${message.from?.username ? `@${escapeHtml(message.from.username)}` : "(မရှိပါ)"}`);
+  }
+  if (command === "/reset") return reply("စကားဝိုင်းမှတ်တမ်း မသိမ်းထားတဲ့ catalog bot ဖြစ်လို့ reset လုပ်စရာ မရှိပါ။");
+  if (command === "/allow" || command === "/remove") {
+    if (!(await isAdmin(env, message.from))) return reply("ဒီ command ကို admin ပဲ သုံးနိုင်ပါတယ်။");
+    const target = await resolveUserId(env, args[0]);
+    if (!target) return reply(`သုံးပုံ: ${command} <Telegram ID> သို့မဟုတ် @username\nUser က bot ကို အရင် message ပို့ပြီး /myid နဲ့ ID ကြည့်နိုင်ပါတယ်။`);
+    if (command === "/allow") {
+      await env.DB.prepare("INSERT OR REPLACE INTO allowed_users(user_id,username,created_at) VALUES(?,?,datetime('now'))").bind(target, String(args[0] || "").replace(/^@/, "")).run();
+      return reply(`Allowed user: <code>${escapeHtml(target)}</code>`);
+    }
+    if (target === adminId(env)) return reply("Admin ကို remove လုပ်လို့မရပါ။");
+    await env.DB.prepare("DELETE FROM allowed_users WHERE user_id=?").bind(target).run();
+    return reply(`Removed user: <code>${escapeHtml(target)}</code>`);
   }
   if (command === "/authors") {
     const rows = await env.DB.prepare("SELECT author,COUNT(*) AS count FROM books WHERE author<>'' GROUP BY author ORDER BY count DESC,author LIMIT 100").all();
     const text = (rows.results || []).map((row, i) => `${i + 1}. <b>${escapeHtml(row.author)}</b> — ${row.count} အုပ်`).join("\n");
-    return sendMessage(env, chatId, text || "စာရေးသူစာရင်း မရှိသေးပါ။");
+    return reply(text || "စာရေးသူစာရင်း မရှိသေးပါ။");
   }
   if (command === "/books") {
     const rows = await env.DB.prepare("SELECT title,author,link FROM books ORDER BY id DESC LIMIT 100").all();
     const buttons = (rows.results || []).filter((row) => row.link).map((row) => [{ text: `${row.title || "စာအုပ်"}${row.author ? ` — ${row.author}` : ""}`.slice(0, 60), url: row.link }]);
-    return sendMessage(env, chatId, buttons.length ? "<b>📚 စာအုပ်စာရင်း</b>\nအောက်က စာအုပ်ကို ရွေးပါရှင်။" : "စာအုပ်စာရင်း မရှိသေးပါ။", buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {});
+    return reply(buttons.length ? "<b>📚 စာအုပ်စာရင်း</b>\nအောက်က စာအုပ်ကို ရွေးပါရှင်။" : "စာအုပ်စာရင်း မရှိသေးပါ။", buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {});
   }
   if (command === "/stats") {
     const row = await env.DB.prepare("SELECT COUNT(*) AS books,COUNT(DISTINCT NULLIF(author,'')) AS authors FROM books").first();
-    return sendMessage(env, chatId, `<b>📊 Catalog စာရင်းအခြေအနေ</b>\n\n📚 စာအုပ်စုစုပေါင်း: <b>${row?.books || 0}</b> အုပ်\n✍️ စာရေးသူစုစုပေါင်း: <b>${row?.authors || 0}</b> ဦး`);
+    return reply(`<b>📊 Catalog စာရင်းအခြေအနေ</b>\n\n📚 စာအုပ်စုစုပေါင်း: <b>${row?.books || 0}</b> အုပ်\n✍️ စာရေးသူစုစုပေါင်း: <b>${row?.authors || 0}</b> ဦး`);
   }
   return null;
 }
@@ -217,6 +300,7 @@ async function handleCommand(env, message) {
 async function handleMessage(env, message) {
   const text = String(message.text || "").trim();
   if (!text) return;
+  await rememberUser(env, message.from);
   if (text.startsWith("/")) return handleCommand(env, message);
   const isGroup = ["group", "supergroup"].includes(message.chat?.type);
   const replyTarget = message.reply_to_message;
@@ -228,7 +312,8 @@ async function handleMessage(env, message) {
     text: `📖 ${`${i + 1}. ${row.title || "စာအုပ်"}${row.author ? ` — ${row.author}` : ""}`.slice(0, 60)}`,
     url: row.link,
   }]);
-  return sendMessage(env, message.chat.id, `<b>📚 ရှာဖွေမှုရလဒ် (${rows.length} ခု)</b>\n\n${result}`, { reply_markup: { inline_keyboard: buttons } });
+  const cleanup = isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {};
+  return sendMessage(env, message.chat.id, `<b>📚 ရှာဖွေမှုရလဒ် (${rows.length} ခု)</b>\n\n${result}`, { ...cleanup, reply_markup: { inline_keyboard: buttons } });
 }
 
 async function handleCallback(env, query) {
@@ -244,7 +329,7 @@ async function handleCallback(env, query) {
 
 export default {
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(ensureWebhook(env));
+    ctx.waitUntil(Promise.all([ensureWebhook(env), cleanupDue(env)]));
   },
 
   async fetch(request, env, ctx) {
@@ -260,6 +345,9 @@ export default {
       } else if (update.callback_query) {
         ctx.waitUntil(handleCallback(env, update.callback_query).catch((error) => console.error("Callback failed", error?.message || "unknown error")));
       } else if (update.message?.text) {
+        if (isGroupMessage(update.message) && autoDeleteEnabled(env) && update.message.text.trim().startsWith("/")) {
+          ctx.waitUntil(queueDelete(env, update.message.chat.id, update.message.message_id, commandDeleteSeconds(env)));
+        }
         ctx.waitUntil(handleMessage(env, update.message).catch((error) => console.error("Message handling failed", error?.message || "unknown error")));
       }
       return new Response("OK");
