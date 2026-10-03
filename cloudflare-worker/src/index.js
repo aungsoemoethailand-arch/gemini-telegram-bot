@@ -206,6 +206,15 @@ async function resolveUserId(env, value) {
   return row?.user_id ? String(row.user_id) : null;
 }
 
+function normalizeChatTarget(value) {
+  const raw = String(value || "").trim();
+  if (/^-?\d+$/.test(raw)) return raw;
+  const withoutQuery = raw.split(/[?#]/, 1)[0].replace(/\/$/, "");
+  const match = withoutQuery.match(/^(?:https?:\/\/)?(?:www\.)?t\.me\/([A-Za-z0-9_]+)$/i);
+  if (match) return `@${match[1]}`;
+  return withoutQuery.startsWith("@") ? withoutQuery : `@${withoutQuery}`;
+}
+
 async function queueDelete(env, chatId, messageId, seconds) {
   if (!autoDeleteEnabled(env) || !chatId || !messageId || seconds <= 0) return;
   await env.DB.prepare("INSERT OR IGNORE INTO cleanup_tasks(chat_id,message_id,delete_at) VALUES(?,?,?)")
@@ -582,12 +591,13 @@ async function handleCommand(env, message) {
     const logTarget = args[0];
     if (!logTarget) return reply("သုံးပုံ: /setlog <log channel @username သို့မဟုတ် ID>");
     try {
-      const logChat = (await telegram(env, "getChat", { chat_id: /^-?\d+$/.test(logTarget) ? logTarget : logTarget })).result;
+      const normalizedTarget = normalizeChatTarget(logTarget);
+      const logChat = (await telegram(env, "getChat", { chat_id: normalizedTarget })).result;
       await env.DB.prepare("INSERT OR REPLACE INTO log_configs(group_chat_id,log_chat_id,configured_by,created_at) VALUES(?,?,?,?)").bind(message.chat.id, logChat.id, message.from.id, Math.floor(Date.now() / 1000)).run();
       await auditAction(env, message, "log_channel_connected", null, `log_chat_id=${logChat.id}`);
       return reply(`✅ Log channel ချိတ်ပြီးပါပြီ။\n${escapeHtml(logChat.title || logChat.username || String(logChat.id))}`);
     } catch (error) {
-      return reply(`❌ Log channel မချိတ်နိုင်ပါ။ Bot ကို log channel ထဲမှာ post permission နဲ့ ထည့်ထားပါ။\n${escapeHtml(error?.message || "Telegram API error")}`);
+      return reply(`❌ Log channel မချိတ်နိုင်ပါ။\n• Public channel ဆိုရင် Bot ကို admin ထည့်ပြီး Post Messages permission ပေးပါ။\n• Private channel ဆိုရင် numeric channel ID (-100...) သုံးပါ။\n• သင်ထည့်ထားတဲ့ URL ကိုလည်း လက်ခံနိုင်ပါပြီ။\n${escapeHtml(error?.message || "Telegram API error")}`);
     }
   }
   if (command === "/unsetlog") {
