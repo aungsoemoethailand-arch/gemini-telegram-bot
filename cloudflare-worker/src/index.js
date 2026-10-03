@@ -556,6 +556,63 @@ async function membershipEvent(env, update, kind = "member_status_changed") {
   await auditAction(env, { chat: event.chat, from: event.from }, kind, event.new_chat_member?.user?.id || null, `${oldStatus} → ${newStatus}`);
 }
 
+function isServiceMessage(message) {
+  return Boolean(message?.new_chat_members?.length || message?.left_chat_member || message?.pinned_message || message?.delete_chat_photo || message?.group_chat_created || message?.supergroup_chat_created || message?.new_chat_title || message?.new_chat_photo || message?.migrate_to_chat_id || message?.migrate_from_chat_id || message?.message_auto_delete_timer_changed);
+}
+
+async function deleteAfterDelay(env, chatId, messageId, milliseconds) {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+  try { await telegram(env, "deleteMessage", { chat_id: chatId, message_id: messageId }); } catch (error) { console.log("Delayed delete skipped", error?.message || "unknown error"); }
+}
+
+function telegramPathAllowed(url) {
+  const match = String(url || "").match(/(?:https?:\/\/)?(?:www\.)?t\.me\/([^\s/?#]+)/i);
+  return Boolean(match && match[1].toLowerCase() === "thebookr");
+}
+
+function forwardedChat(message) {
+  return message?.forward_origin?.chat || message?.forward_from_chat || null;
+}
+
+async function hasGroupAdminPrivilege(env, message) {
+  if (await isBotAdmin(env, message.from)) return true;
+  try {
+    const status = (await telegram(env, "getChatMember", { chat_id: message.chat.id, user_id: message.from.id })).result?.status;
+    return ["administrator", "creator"].includes(status);
+  } catch { return false; }
+}
+
+async function enforceForwardPolicy(env, message) {
+  if (!isGroupMessage(message) || !message.from || await hasGroupAdminPrivilege(env, message)) return false;
+  const origin = forwardedChat(message);
+  const originUsername = String(origin?.username || "").toLowerCase();
+  const text = `${message.text || ""}\n${message.caption || ""}`;
+  const telegramLinks = text.match(/(?:https?:\/\/)?(?:www\.)?t\.me\/[^\s/?#]+(?:\/[^\s]*)?/gi) || [];
+  const fromOtherChat = Boolean(origin && originUsername !== "thebookr");
+  const hasOtherTelegramLink = telegramLinks.some((link) => !telegramPathAllowed(link));
+  const allowedBookRForward = Boolean(origin && originUsername === "thebookr");
+  if (allowedBookRForward || (!fromOtherChat && !hasOtherTelegramLink)) return false;
+  try { await telegram(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }); } catch (error) { console.log("Policy delete failed", error?.message || "unknown error"); }
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare("INSERT INTO forward_violations(group_chat_id,user_id,count,last_violation) VALUES(?,?,1,?) ON CONFLICT(group_chat_id,user_id) DO UPDATE SET count=count+1,last_violation=excluded.last_violation")
+    .bind(message.chat.id, message.from.id, now).run();
+  const violation = await env.DB.prepare("SELECT count FROM forward_violations WHERE group_chat_id=? AND user_id=?").bind(message.chat.id, message.from.id).first();
+  const count = Number(violation?.count || 1);
+  const userLabel = message.from.username ? `@${message.from.username}` : `<a href="tg://user?id=${message.from.id}">${message.from.first_name || "User"}</a>`;
+  await auditAction(env, message, "unauthorized_forward_deleted", message.from.id, `${count}/4`);
+  if (count >= 4) {
+    try {
+      await telegram(env, "banChatMember", { chat_id: message.chat.id, user_id: message.from.id, revoke_messages: true });
+      await telegram(env, "unbanChatMember", { chat_id: message.chat.id, user_id: message.from.id, only_if_banned: true });
+      await auditAction(env, message, "user_removed_after_four_violations", message.from.id, "four-strike forward policy");
+      await sendMessage(env, message.chat.id, `🚫 ${userLabel} ကို ခွင့်မပြုထားတဲ့ Telegram forward ${count} ကြိမ်ကြောင့် group မှ ဖယ်ရှားလိုက်ပါပြီ။`);
+    } catch (error) { console.log("Four-strike removal failed", error?.message || "unknown error"); }
+  } else {
+    await sendMessage(env, message.chat.id, `⚠️ ${userLabel} ခွင့်မပြုထားတဲ့ Telegram channel/group link သို့မဟုတ် forward ဖြစ်လို့ ဖျက်လိုက်ပါတယ်။\nသတိပေးချက်: <b>${count}/4</b>\n4 ကြိမ်ပြည့်ရင် group မှ ဖယ်ရှားပါမယ်။\nခွင့်ပြုထားသော channel: https://t.me/TheBookR`);
+  }
+  return true;
+}
+
 async function handleCommand(env, message) {
   const text = String(message.text || "").trim();
   const [rawCommand, ...args] = text.split(/\s+/);
@@ -723,14 +780,22 @@ export default {
         ctx.waitUntil(membershipEvent(env, update, "bot_status_changed").catch((error) => console.error("Bot status audit failed", error?.message || "unknown error")));
       } else if (update.edited_message) {
         ctx.waitUntil(auditAction(env, update.edited_message, "message_edited", null, `message_id=${update.edited_message.message_id}`).catch((error) => console.error("Edit audit failed", error?.message || "unknown error")));
-      } else if (update.message?.text) {
-        if (isGroupMessage(update.message) && autoDeleteEnabled(env) && update.message.text.trim().startsWith("/")) {
-          ctx.waitUntil(queueDelete(env, update.message.chat.id, update.message.message_id, commandDeleteSeconds(env)));
-        }
-        ctx.waitUntil(handleMessage(env, update.message).catch((error) => console.error("Message handling failed", error?.message || "unknown error")));
       } else if (update.message) {
-        ctx.waitUntil(rememberChat(env, update.message.chat));
-        ctx.waitUntil(serviceEvent(env, update.message).catch((error) => console.error("Service event audit failed", error?.message || "unknown error")));
+        const message = update.message;
+        ctx.waitUntil(rememberChat(env, message.chat));
+        if (isGroupMessage(message) && isServiceMessage(message)) {
+          ctx.waitUntil(deleteAfterDelay(env, message.chat.id, message.message_id, 2000));
+        }
+        ctx.waitUntil(enforceForwardPolicy(env, message).then(async (blocked) => {
+          if (blocked) return null;
+          if (message.text) {
+            if (isGroupMessage(message) && autoDeleteEnabled(env) && message.text.trim().startsWith("/")) {
+              await queueDelete(env, message.chat.id, message.message_id, commandDeleteSeconds(env));
+            }
+            return handleMessage(env, message);
+          }
+          return serviceEvent(env, message);
+        }).catch((error) => console.error("Message handling failed", error?.message || "unknown error")));
       }
       return new Response("OK");
     } catch (error) {
