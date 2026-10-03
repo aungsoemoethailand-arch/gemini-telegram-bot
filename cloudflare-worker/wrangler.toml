@@ -4,7 +4,7 @@ compatibility_date = "2026-10-03"
 
 [vars]
 WORKER_URL = "https://gemini-telegram-webhook.aungsoemoe-thailand.workers.dev"
-ENABLE_WEBHOOK = "false"
+ENABLE_WEBHOOK = "true"
 # Set secrets with: npx wrangler secret put TELEGRAM_BOT_TOKEN
 # Optional: npx wrangler secret put TELEGRAM_SECRET_TOKEN
 
