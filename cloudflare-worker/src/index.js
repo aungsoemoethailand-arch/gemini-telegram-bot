@@ -491,6 +491,26 @@ async function isBotAdmin(env, user) {
   return Boolean(row);
 }
 
+// Telegram can send an admin's command on behalf of the group profile
+// (`sender_chat`) when Anonymous Admin / Send As Group is enabled. In that
+// case the real user's admin identity is not present in `message.from`.
+async function isAuthorizedGroupAdmin(env, message) {
+  if (!isGroupMessage(message)) return false;
+  if (message.sender_chat?.id && String(message.sender_chat.id) === String(message.chat?.id)) return true;
+  if (await isBotAdmin(env, message.from)) return true;
+  if (!message.from?.id) return false;
+  try {
+    const status = (await telegram(env, "getChatMember", {
+      chat_id: message.chat.id,
+      user_id: message.from.id,
+    })).result?.status;
+    return ["administrator", "creator"].includes(status);
+  } catch (error) {
+    console.log("Group admin check failed", error?.message || "unknown error");
+    return false;
+  }
+}
+
 async function auditAction(env, message, action, targetId = null, details = "") {
   const groupId = message.chat.id;
   await env.DB.prepare("INSERT INTO action_logs(group_chat_id,actor_id,action,target_id,details,created_at) VALUES(?,?,?,?,?,?)")
@@ -511,7 +531,7 @@ function parseMuteSeconds(value) {
 
 async function moderateMember(env, message, command, args) {
   if (!isGroupMessage(message)) { await sendMessage(env, message.chat.id, "ဒီ command ကို group ထဲမှာပဲ သုံးနိုင်ပါတယ်။"); return true; }
-  if (!(await isBotAdmin(env, message.from))) { await sendMessage(env, message.chat.id, "ဒီ moderation command ကို bot admin ပဲ သုံးနိုင်ပါတယ်။"); return true; }
+  if (!(await isAuthorizedGroupAdmin(env, message))) { await sendMessage(env, message.chat.id, "ဒီ moderation command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။"); return true; }
   const target = await resolveUserId(env, args[0]);
   if (!target) { await sendMessage(env, message.chat.id, `သုံးပုံ: /${command} <Telegram ID သို့မဟုတ် @username>`); return true; }
   try {
@@ -663,6 +683,7 @@ function forwardedChat(message) {
 }
 
 async function hasGroupAdminPrivilege(env, message) {
+  if (message.sender_chat?.id && String(message.sender_chat.id) === String(message.chat?.id)) return true;
   if (await isBotAdmin(env, message.from)) return true;
   try {
     const status = (await telegram(env, "getChatMember", { chat_id: message.chat.id, user_id: message.from.id })).result?.status;
@@ -732,7 +753,7 @@ async function handleCommand(env, message) {
     if (await moderateMember(env, message, command.slice(1), args)) return null;
   }
   if (command === "/setlog") {
-    if (!isGroupMessage(message) || !(await isBotAdmin(env, message.from))) return reply("ဒီ command ကို group ထဲမှာ bot admin ပဲ သုံးနိုင်ပါတယ်။");
+    if (!(await isAuthorizedGroupAdmin(env, message))) return reply("ဒီ command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။");
     const logTarget = args[0];
     if (!logTarget) return reply("သုံးပုံ: /setlog <log channel @username သို့မဟုတ် ID>");
     try {
@@ -746,12 +767,12 @@ async function handleCommand(env, message) {
     }
   }
   if (command === "/unsetlog") {
-    if (!isGroupMessage(message) || !(await isBotAdmin(env, message.from))) return reply("ဒီ command ကို group ထဲမှာ bot admin ပဲ သုံးနိုင်ပါတယ်။");
+    if (!(await isAuthorizedGroupAdmin(env, message))) return reply("ဒီ command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။");
     await env.DB.prepare("DELETE FROM log_configs WHERE group_chat_id=?").bind(message.chat.id).run();
     return reply("✅ Log channel ချိတ်ဆက်မှု ဖြုတ်ပြီးပါပြီ။");
   }
   if (command === "/history") {
-    if (!isGroupMessage(message) || !(await isBotAdmin(env, message.from))) return reply("ဒီ command ကို group ထဲမှာ bot admin ပဲ သုံးနိုင်ပါတယ်။");
+    if (!(await isAuthorizedGroupAdmin(env, message))) return reply("ဒီ command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။");
     const rows = await env.DB.prepare("SELECT action,target_id,details,created_at FROM action_logs WHERE group_chat_id=? ORDER BY id DESC LIMIT 30").bind(message.chat.id).all();
     const list = (rows.results || []).map((row, index) => `${index + 1}. <b>${escapeHtml(row.action)}</b>${row.target_id ? ` — <code>${escapeHtml(row.target_id)}</code>` : ""}${row.details ? `\n${escapeHtml(row.details)}` : ""}`).join("\n\n");
     return reply(`<b>🛡 Recent Admin History</b>\n${list || "မှတ်တမ်း မရှိသေးပါ။"}`);
