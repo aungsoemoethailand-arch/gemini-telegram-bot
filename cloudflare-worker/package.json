@@ -1,0 +1,13 @@
+{
+  "name": "gemini-telegram-webhook",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate": "wrangler d1 migrations apply gemini-telegram-catalog --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

@@ -1,0 +1,13 @@
+name = "gemini-telegram-webhook"
+main = "src/index.js"
+compatibility_date = "2026-10-04"
+
+[vars]
+# Set secrets with: npx wrangler secret put TELEGRAM_BOT_TOKEN
+# Optional: npx wrangler secret put TELEGRAM_SECRET_TOKEN
+
+[[d1_databases]]
+binding = "DB"
+database_name = "gemini-telegram-catalog"
+database_id = "1a7d4522-0704-4d75-978f-6083be245458"
+migrations_dir = "migrations"
