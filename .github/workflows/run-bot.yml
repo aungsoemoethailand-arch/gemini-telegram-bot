@@ -3,7 +3,9 @@ name: Run Gemini Telegram Bot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */5 * * *"
+    # Start five minutes after each six-hour boundary to avoid GitHub's
+    # top-of-hour scheduling congestion. The job runs for 5h55m.
+    - cron: "5 0,6,12,18 * * *"
   push:
     branches: [main]
 
@@ -17,7 +19,7 @@ concurrency:
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 355
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -66,4 +68,16 @@ jobs:
           echo "Telegram and Gemini secrets are configured."
 
       - name: Start bot
-        run: python bot.py
+        run: |
+          # Keep the runner alive if polling exits because of a transient
+          # Telegram/network/provider error. The workflow timeout and the
+          # six-hour schedule remain the outer safety boundary.
+          while true; do
+            echo "Starting Telegram bot at $(date -u --iso-8601=seconds)"
+            set +e
+            python bot.py
+            status=$?
+            set -e
+            echo "Bot exited with status $status; restarting in 15 seconds"
+            sleep 15
+          done

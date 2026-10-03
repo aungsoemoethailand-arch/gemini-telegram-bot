@@ -1,0 +1,27 @@
+name: Recover Gemini Telegram Bot
+
+on:
+  workflow_run:
+    workflows: ["Run Gemini Telegram Bot"]
+    types: [completed]
+
+permissions:
+  actions: write
+
+jobs:
+  recover:
+    # Recover scheduled/manual runs that fail before the bot stays alive.
+    # Push cancellations are intentionally ignored.
+    if: >-
+      github.event.workflow_run.conclusion != 'success' &&
+      (github.event.workflow_run.event == 'schedule' ||
+       github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for cancellation to settle
+        run: sleep 20
+
+      - name: Restart bot workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run run-bot.yml --ref main

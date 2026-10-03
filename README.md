@@ -59,6 +59,8 @@ Add one or more Groq secrets named `GROQ_API_KEY`, `GROQ_API_KEY_2`, `GROQ_API_K
 
 The current deployment uses GitHub Actions. A run can stay alive for up to 350 minutes, and a scheduled workflow attempts to restart it every 5 hours. This is not a guaranteed 24/7 service: GitHub runner startup delays, cancellation delays, or quota limits can create downtime. For reliable always-on operation, move the bot to a persistent VPS or hosting service.
 
+The workflow is tuned for minimum downtime: it starts at minute 5 every six hours, runs for 355 minutes, automatically restarts `bot.py` if the polling process exits, and dispatches a recovery run after an early scheduled/manual failure. GitHub-hosted runners still have a six-hour job limit, so this remains near-24/7 rather than guaranteed 24/7 hosting.
+
 ## Group message auto-delete
 
 Following the reference Group Guardian Bot's safe cleanup policy:
