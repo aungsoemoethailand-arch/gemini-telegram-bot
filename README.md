@@ -83,12 +83,14 @@ Authorized users can search from the bot DM with:
 စာရင်းအပြည့်အစုံကြည့်ရန်:
 
 ```text
-/author
+/authors
 /books
 ```
 
-စာရေးသူစာရင်းနှင့် စာအုပ်စာရင်းများကို Telegram message limit မကျော်အောင်
-စာမျက်နှာခွဲပြီး Previous/Next ခလုတ်များဖြင့် ပြပေးသည်။
+`/authors` က စာရေးသူတစ်ယောက်ချင်းစီ၏ စာအုပ်အရေအတွက်ကို ပြပေးသည်။
+`/books` က စာအုပ်တစ်အုပ်ချင်းစီအတွက် ဖတ်ရန် link ခလုတ်ပါ ထည့်ပေးသည်။
+စာရင်းနှစ်ခုလုံးကို Telegram message limit မကျော်အောင် စာမျက်နှာခွဲပြီး
+Previous/Next ခလုတ်များဖြင့် ပြပေးသည်။
 
 In groups, authorized users can search in any of these ways:
 

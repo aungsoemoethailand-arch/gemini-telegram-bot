@@ -698,29 +698,29 @@ async def handle_search_page(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.answer("ရှာဖွေမှု page မမှန်ပါ။", show_alert=True)
 
 
-def catalog_list_items(kind: str) -> list[tuple[str, str]]:
+def catalog_list_items(kind: str) -> list[tuple]:
     """Return unique catalog entries for /author and /books listings."""
     with sqlite3.connect(BOOK_DB_PATH) as db:
         rows = db.execute(
             "SELECT chat_id, author, title, link, raw_text FROM books WHERE chat_id != ? ORDER BY id DESC",
             (-2000000001,),
         ).fetchall()
-    rows = [
-        (author, title)
-        for chat_id, author, title, link, raw_text in rows
-        if not is_review_record(chat_id, author, title, link, raw_text)
-    ]
+    rows = [row for row in rows if not is_review_record(*row)]
     if kind == "authors":
-        values = sorted({author.strip() for author, _title in rows if author.strip()}, key=str.casefold)
-        return [(value, "") for value in values]
+        author_books: dict[str, set[str]] = {}
+        for _chat_id, author, title, _link, _raw_text in rows:
+            author, title = author.strip(), title.strip()
+            if author and title:
+                author_books.setdefault(author, set()).add(title)
+        return [(author, str(len(titles))) for author, titles in sorted(author_books.items(), key=lambda item: item[0].casefold())]
     seen: set[tuple[str, str]] = set()
-    items: list[tuple[str, str]] = []
-    for author, title in rows:
-        author, title = author.strip(), title.strip()
+    items: list[tuple[str, str, str]] = []
+    for _chat_id, author, title, link, _raw_text in rows:
+        author, title, link = author.strip(), title.strip(), link.strip()
         if not title or (author, title) in seen:
             continue
         seen.add((author, title))
-        items.append((title, author))
+        items.append((title, author, link))
     items.sort(key=lambda item: (item[0].casefold(), item[1].casefold()))
     return items
 
@@ -728,7 +728,7 @@ def catalog_list_items(kind: str) -> list[tuple[str, str]]:
 async def send_catalog_page(
     update: Update,
     kind: str,
-    items: list[tuple[str, str]],
+    items: list[tuple],
     page: int = 0,
     token: str | None = None,
 ) -> None:
@@ -741,18 +741,26 @@ async def send_catalog_page(
     visible = items[page * page_size : (page + 1) * page_size]
     title = "စာရေးသူစာရင်း" if kind == "authors" else "စာအုပ်စာရင်း"
     lines = [f"<b>📚 {title} ({len(items)} ခု)</b>", f"စာမျက်နှာ {page + 1}/{page_count}"]
-    for index, (name, author) in enumerate(visible, page * page_size + 1):
+    buttons = []
+    for index, item in enumerate(visible, page * page_size + 1):
         if kind == "authors":
-            lines.append(f"\n<b>{index}. {html.escape(name)}</b>")
+            name, count = item
+            lines.append(f"\n<b>{index}. {html.escape(name)}</b> — စာအုပ် {count} အုပ်")
         else:
+            name, author, link = item
             author_line = f"\nစာရေးသူ: {html.escape(author)}" if author else ""
             lines.append(f"\n<b>{index}. {html.escape(name)}</b>{author_line}")
-    buttons = []
-    if page > 0:
-        buttons.append(InlineKeyboardButton("⬅️ နောက်ပြန်", callback_data=f"catalogpage:{token}:{page - 1}"))
-    if page < page_count - 1:
-        buttons.append(InlineKeyboardButton("ရှေ့ဆက် ➡️", callback_data=f"catalogpage:{token}:{page + 1}"))
-    markup = InlineKeyboardMarkup([buttons]) if buttons else None
+            if link:
+                button_title = re.sub(r"\s+", " ", name).strip()[:48]
+                buttons.append([InlineKeyboardButton(f"📖 {button_title}", url=link)])
+    if page > 0 or page < page_count - 1:
+        navigation = []
+        if page > 0:
+            navigation.append(InlineKeyboardButton("⬅️ နောက်ပြန်", callback_data=f"catalogpage:{token}:{page - 1}"))
+        if page < page_count - 1:
+            navigation.append(InlineKeyboardButton("ရှေ့ဆက် ➡️", callback_data=f"catalogpage:{token}:{page + 1}"))
+        buttons.append(navigation)
+    markup = InlineKeyboardMarkup(buttons) if buttons else None
     if update.callback_query:
         await update.callback_query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=markup)
     else:
@@ -984,7 +992,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "<b>📚 အသုံးပြုပုံလေးပါရှင်</b>\n\n"
         "<b>စာအုပ် link ရှာရန်</b>\n/search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ\n\n"
-        "<b>စာရင်းအပြည့်အစုံ</b>\n/author — ရှိသမျှ စာရေးသူများ\n/books — ရှိသမျှ စာအုပ်များ\n\n"
+        "<b>စာရင်းအပြည့်အစုံ</b>\n/authors — စာရေးသူများနှင့် စာအုပ်အရေအတွက်\n/books — စာအုပ်များနှင့် link ခလုတ်များ\n\n"
         "<b>မူရင်းအညွှန်းဖတ်ရန်</b>\n/ask စာအုပ်နာမည်\n\n"
         "Group ထဲမှာတော့ @YourBot နဲ့ mention လုပ်ပြီး မေးလို့ရပါတယ်ရှင် 💜",
         parse_mode="HTML",
@@ -1249,6 +1257,7 @@ def main() -> None:
     application.add_handler(CommandHandler("myid", my_id))
     application.add_handler(CommandHandler("search", search_books))
     application.add_handler(CommandHandler("author", list_authors))
+    application.add_handler(CommandHandler("authors", list_authors))
     application.add_handler(CommandHandler("books", list_books))
     application.add_handler(CommandHandler("ask", ask_books))
     application.add_handler(CallbackQueryHandler(handle_search_page, pattern=r"^bookpage:"))
