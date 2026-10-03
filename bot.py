@@ -1130,17 +1130,21 @@ async def catalog_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     top_authors = sorted(authors, key=lambda item: int(item[1]), reverse=True)[:10]
     lines = [
-        "<b>📊 Catalog စာရင်းအခြေအနေ</b>",
-        f"📚 စာအုပ်စုစုပေါင်း: <b>{len(books)}</b> အုပ်",
-        f"✍️ စာရေးသူစုစုပေါင်း: <b>{len(authors)}</b> ဦး",
+        f"{requester_mention(update)}\n",
+        "╭────────────────────╮",
+        "│  <b>📊 CATALOG စာရင်း</b>  │",
+        "├────────────────────┤",
+        f"│ 📚 စာအုပ်       <b>{len(books):>4}</b> အုပ် │",
+        f"│ ✍️ စာရေးသူ      <b>{len(authors):>4}</b> ဦး  │",
+        "╰────────────────────╯",
     ]
     if top_authors:
-        lines.append("\n<b>စာအုပ်အများဆုံးရှိတဲ့ စာရေးသူများ</b>")
+        lines.extend(["", "<b>🏆 စာအုပ်အများဆုံးရှိတဲ့ စာရေးသူများ</b>", ""])
         lines.extend(
-            f"{index}. {html.escape(author)} — {count} အုပ်"
+            f"<b>{index:>2}.</b> {html.escape(author)} — <b>{count} အုပ်</b>"
             for index, (author, count) in enumerate(top_authors, 1)
         )
-    await reply_with_mention(update, "\n".join(lines))
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 async def ask_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
