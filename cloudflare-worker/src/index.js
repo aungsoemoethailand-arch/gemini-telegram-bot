@@ -105,6 +105,34 @@ async function isAdmin(env, user) {
   return Boolean(user?.id && adminId(env) && String(user.id) === adminId(env));
 }
 
+async function rememberChat(env, chat) {
+  if (!chat?.id || !["group", "supergroup", "channel"].includes(chat.type)) return;
+  await env.DB.prepare(
+    `INSERT INTO connected_chats(chat_id,chat_type,title,username,last_seen) VALUES(?,?,?,?,?)
+     ON CONFLICT(chat_id) DO UPDATE SET chat_type=excluded.chat_type,title=excluded.title,username=excluded.username,last_seen=excluded.last_seen`
+  ).bind(chat.id, chat.type, chat.title || "", chat.username || "", Math.floor(Date.now() / 1000)).run();
+}
+
+async function connectedGroups(env) {
+  const rows = await env.DB.prepare("SELECT chat_id,chat_type,title,username FROM connected_chats WHERE chat_type IN ('group','supergroup') ORDER BY title").all();
+  let botId = null;
+  try { botId = (await telegram(env, "getMe", {})).result?.id; } catch {}
+  const groups = [];
+  for (const row of rows.results || []) {
+    try {
+      const chat = (await telegram(env, "getChat", { chat_id: row.chat_id })).result || {};
+      let status = "unknown";
+      if (botId) status = (await telegram(env, "getChatMember", { chat_id: row.chat_id, user_id: botId })).result?.status || "unknown";
+      if (!["member", "administrator", "creator"].includes(status)) continue;
+      const link = chat.invite_link || (chat.username ? `https://t.me/${chat.username}` : "");
+      groups.push({ title: chat.title || row.title || "အမည်မရှိ group", status, link });
+    } catch (error) {
+      console.log("Connected chat check skipped", row.chat_id, error?.message || "unknown error");
+    }
+  }
+  return groups;
+}
+
 async function resolveUserId(env, value) {
   const raw = String(value || "").trim();
   if (!raw) return null;
@@ -399,6 +427,19 @@ async function handleCommand(env, message) {
   if (command === "/search" || command === "/find") {
     return query ? sendSearch(env, chatId, query, cleanup) : reply("သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
   }
+  if (command === "/connects") {
+    if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
+    const groups = await connectedGroups(env);
+    if (!groups.length) return reply("Bot သုံးနေတဲ့ group မတွေ့သေးပါ။ Bot က group ထဲမှာ message/update တစ်ခုခု ရရှိပြီးမှ စာရင်းထဲဝင်ပါမယ်။");
+    const lines = [`<b>🔗 Bot ချိတ်ထားတဲ့ Group များ (${groups.length})</b>`];
+    const buttons = [];
+    groups.forEach((group, index) => {
+      const role = group.status === "administrator" || group.status === "creator" ? "Admin" : "Member";
+      lines.push(`${index + 1}. <b>${escapeHtml(group.title)}</b> — ${role}${group.link ? "" : " — link မရနိုင်ပါ"}`);
+      if (group.link) buttons.push([{ text: `🔗 ${String(group.title).slice(0, 55)}`, url: group.link }]);
+    });
+    return reply(lines.join("\n"), buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {});
+  }
   if (command === "/ask") {
     if (!query) return reply("သုံးပုံ: /ask စာအုပ်နာမည်");
     const local = await localReviewMatches(env, query);
@@ -438,6 +479,7 @@ async function handleCommand(env, message) {
 async function handleMessage(env, message) {
   const text = String(message.text || "").trim();
   if (!text) return;
+  await rememberChat(env, message.chat);
   await rememberUser(env, message.from);
   if (text.startsWith("/")) return handleCommand(env, message);
   const isGroup = ["group", "supergroup"].includes(message.chat?.type);
@@ -483,6 +525,7 @@ export default {
       if (env.TELEGRAM_SECRET_TOKEN && request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.TELEGRAM_SECRET_TOKEN) return new Response("Unauthorized", { status: 401 });
       const update = await request.json();
       if (update.channel_post) {
+        ctx.waitUntil(rememberChat(env, update.channel_post.chat));
         ctx.waitUntil(importChannelPost(env, update.channel_post).catch((error) => console.error("Channel import failed", error?.message || "unknown error")));
       } else if (update.callback_query) {
         ctx.waitUntil(handleCallback(env, update.callback_query).catch((error) => console.error("Callback failed", error?.message || "unknown error")));
