@@ -297,7 +297,7 @@ async function ensureWebhook(env) {
   await telegram(env, "setWebhook", {
     url: env.WORKER_URL,
     secret_token: env.TELEGRAM_SECRET_TOKEN || undefined,
-    allowed_updates: ["message", "channel_post", "callback_query"],
+    allowed_updates: ["message", "edited_message", "channel_post", "callback_query", "chat_member", "my_chat_member"],
   });
 }
 
@@ -474,6 +474,79 @@ async function sendReviews(env, chatId, query, reviews, cleanup = {}) {
   return sendMessage(env, chatId, lines.join("\n"), { ...cleanup, ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}) });
 }
 
+async function isBotAdmin(env, user) {
+  if (await isAdmin(env, user)) return true;
+  if (!user?.id) return false;
+  const row = await env.DB.prepare("SELECT user_id FROM bot_admins WHERE user_id=?").bind(user.id).first();
+  return Boolean(row);
+}
+
+async function auditAction(env, message, action, targetId = null, details = "") {
+  const groupId = message.chat.id;
+  await env.DB.prepare("INSERT INTO action_logs(group_chat_id,actor_id,action,target_id,details,created_at) VALUES(?,?,?,?,?,?)")
+    .bind(groupId, message.from?.id || null, action, targetId, details, Math.floor(Date.now() / 1000)).run();
+  const config = await env.DB.prepare("SELECT log_chat_id FROM log_configs WHERE group_chat_id=?").bind(groupId).first();
+  if (!config?.log_chat_id) return;
+  const actor = message.from?.username ? `@${message.from.username}` : String(message.from?.id || "unknown");
+  const text = `<b>🛡 Group Audit</b>\nGroup: <b>${escapeHtml(message.chat.title || String(groupId))}</b>\nAction: <b>${escapeHtml(action)}</b>\nActor: <code>${escapeHtml(actor)}</code>${targetId ? `\nTarget: <code>${escapeHtml(targetId)}</code>` : ""}${details ? `\n${escapeHtml(details)}` : ""}`;
+  try { await sendMessage(env, config.log_chat_id, text); } catch (error) { console.log("Audit log delivery failed", error?.message || "unknown error"); }
+}
+
+function parseMuteSeconds(value) {
+  const match = String(value || "1h").match(/^(\d+)(m|h|d)?$/i);
+  if (!match) return 3600;
+  const amount = Number(match[1]);
+  return Math.min(30 * 86400, amount * ({ m: 60, h: 3600, d: 86400 }[(match[2] || "m").toLowerCase()] || 60));
+}
+
+async function moderateMember(env, message, command, args) {
+  if (!isGroupMessage(message)) { await sendMessage(env, message.chat.id, "ဒီ command ကို group ထဲမှာပဲ သုံးနိုင်ပါတယ်။"); return true; }
+  if (!(await isBotAdmin(env, message.from))) { await sendMessage(env, message.chat.id, "ဒီ moderation command ကို bot admin ပဲ သုံးနိုင်ပါတယ်။"); return true; }
+  const target = await resolveUserId(env, args[0]);
+  if (!target) { await sendMessage(env, message.chat.id, `သုံးပုံ: /${command} <Telegram ID သို့မဟုတ် @username>`); return true; }
+  try {
+    if (command === "ban") {
+      await telegram(env, "banChatMember", { chat_id: message.chat.id, user_id: target, revoke_messages: true });
+    } else if (command === "unban") {
+      await telegram(env, "unbanChatMember", { chat_id: message.chat.id, user_id: target, only_if_banned: true });
+    } else if (command === "kick" || command === "remove") {
+      await telegram(env, "banChatMember", { chat_id: message.chat.id, user_id: target, revoke_messages: true });
+      await telegram(env, "unbanChatMember", { chat_id: message.chat.id, user_id: target, only_if_banned: true });
+    } else if (command === "mute") {
+      const seconds = parseMuteSeconds(args[1] || "1h");
+      await telegram(env, "restrictChatMember", { chat_id: message.chat.id, user_id: target, until_date: Math.floor(Date.now() / 1000) + seconds, use_independent_chat_permissions: true, permissions: { can_send_messages: false, can_send_audios: false, can_send_documents: false, can_send_photos: false, can_send_videos: false, can_send_video_notes: false, can_send_voice_notes: false, can_send_polls: false, can_send_other_messages: false, can_add_web_page_previews: false, can_change_info: false, can_invite_users: false, can_pin_messages: false } });
+    } else if (command === "unmute") {
+      await telegram(env, "restrictChatMember", { chat_id: message.chat.id, user_id: target, use_independent_chat_permissions: true, permissions: { can_send_messages: true, can_send_audios: true, can_send_documents: true, can_send_photos: true, can_send_videos: true, can_send_video_notes: true, can_send_voice_notes: true, can_send_polls: true, can_send_other_messages: true, can_add_web_page_previews: true, can_invite_users: true, can_pin_messages: true } });
+    } else return false;
+    await auditAction(env, message, command, target, args.slice(1).join(" "));
+    await sendMessage(env, message.chat.id, `✅ <b>${escapeHtml(command)}</b> လုပ်ပြီးပါပြီ။\nUser: <code>${escapeHtml(target)}</code>`);
+  } catch (error) {
+    await sendMessage(env, message.chat.id, `❌ လုပ်မရပါ။ Bot ကို group ထဲမှာ admin ထားပြီး ban/restrict permission ပေးထားရပါမယ်။\n${escapeHtml(error?.message || "Telegram API error")}`);
+  }
+  return true;
+}
+
+async function serviceEvent(env, message) {
+  if (!message?.chat || !isGroupMessage(message)) return;
+  let action = "group_event";
+  let details = "";
+  if (message.new_chat_members?.length) { action = "member_joined"; details = message.new_chat_members.map((u) => u.username ? `@${u.username}` : String(u.id)).join(", "); }
+  else if (message.left_chat_member) { action = "member_left"; details = message.left_chat_member.username ? `@${message.left_chat_member.username}` : String(message.left_chat_member.id); }
+  else if (message.pinned_message) { action = "message_pinned"; details = `message_id=${message.pinned_message.message_id}`; }
+  else if (message.delete_chat_photo) { action = "chat_photo_deleted"; }
+  else return;
+  await auditAction(env, { ...message, from: message.from || message.left_chat_member || null }, action, null, details);
+}
+
+async function membershipEvent(env, update, kind = "member_status_changed") {
+  const event = update.chat_member || update.my_chat_member;
+  if (!event?.chat || !isGroupMessage(event.chat)) return;
+  await rememberChat(env, event.chat);
+  const oldStatus = event.old_chat_member?.status || "unknown";
+  const newStatus = event.new_chat_member?.status || "unknown";
+  await auditAction(env, { chat: event.chat, from: event.from }, kind, event.new_chat_member?.user?.id || null, `${oldStatus} → ${newStatus}`);
+}
+
 async function handleCommand(env, message) {
   const text = String(message.text || "").trim();
   const [rawCommand, ...args] = text.split(/\s+/);
@@ -487,6 +560,46 @@ async function handleCommand(env, message) {
       [{ text: "🔎 စာအုပ်ရှာမယ်", callback_data: "help_search" }, { text: "✍️ စာရေးသူများ", callback_data: "help_authors" }],
       [{ text: "📚 စာအုပ်များ", callback_data: "help_books" }, { text: "📊 အခြေအနေ", callback_data: "help_stats" }],
     ] } });
+  }
+  if (command === "/add") {
+    if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
+    const target = await resolveUserId(env, args[0]);
+    if (!target) return reply("သုံးပုံ: /add <Telegram ID သို့မဟုတ် @username>\nUsername ကိုရှာရန် အဲဒီ user က bot ကို အရင် message ပို့ထားရပါမယ်။");
+    await env.DB.prepare("INSERT OR REPLACE INTO bot_admins(user_id,username,added_by,created_at) VALUES(?,?,?,?)").bind(target, String(args[0] || "").replace(/^@/, ""), message.from.id, Math.floor(Date.now() / 1000)).run();
+    return reply(`✅ Bot admin ထည့်ပြီးပါပြီ။\nUser: <code>${escapeHtml(target)}</code>`);
+  }
+  if (command === "/admins") {
+    if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
+    const rows = await env.DB.prepare("SELECT user_id,username FROM bot_admins ORDER BY created_at").all();
+    const list = (rows.results || []).map((row, index) => `${index + 1}. <code>${row.user_id}</code>${row.username ? ` @${escapeHtml(row.username)}` : ""}`).join("\n");
+    return reply(`<b>Bot Admin များ</b>\nOwner: <code>${escapeHtml(adminId(env))}</code>${list ? `\n${list}` : "\nထပ်ထည့်ထားတဲ့ admin မရှိသေးပါ။"}`);
+  }
+  if (["ban", "unban", "kick", "remove", "mute", "unmute"].includes(command)) {
+    if (await moderateMember(env, message, command.slice(1), args)) return null;
+  }
+  if (command === "/setlog") {
+    if (!isGroupMessage(message) || !(await isBotAdmin(env, message.from))) return reply("ဒီ command ကို group ထဲမှာ bot admin ပဲ သုံးနိုင်ပါတယ်။");
+    const logTarget = args[0];
+    if (!logTarget) return reply("သုံးပုံ: /setlog <log channel @username သို့မဟုတ် ID>");
+    try {
+      const logChat = (await telegram(env, "getChat", { chat_id: /^-?\d+$/.test(logTarget) ? logTarget : logTarget })).result;
+      await env.DB.prepare("INSERT OR REPLACE INTO log_configs(group_chat_id,log_chat_id,configured_by,created_at) VALUES(?,?,?,?)").bind(message.chat.id, logChat.id, message.from.id, Math.floor(Date.now() / 1000)).run();
+      await auditAction(env, message, "log_channel_connected", null, `log_chat_id=${logChat.id}`);
+      return reply(`✅ Log channel ချိတ်ပြီးပါပြီ။\n${escapeHtml(logChat.title || logChat.username || String(logChat.id))}`);
+    } catch (error) {
+      return reply(`❌ Log channel မချိတ်နိုင်ပါ။ Bot ကို log channel ထဲမှာ post permission နဲ့ ထည့်ထားပါ။\n${escapeHtml(error?.message || "Telegram API error")}`);
+    }
+  }
+  if (command === "/unsetlog") {
+    if (!isGroupMessage(message) || !(await isBotAdmin(env, message.from))) return reply("ဒီ command ကို group ထဲမှာ bot admin ပဲ သုံးနိုင်ပါတယ်။");
+    await env.DB.prepare("DELETE FROM log_configs WHERE group_chat_id=?").bind(message.chat.id).run();
+    return reply("✅ Log channel ချိတ်ဆက်မှု ဖြုတ်ပြီးပါပြီ။");
+  }
+  if (command === "/history") {
+    if (!isGroupMessage(message) || !(await isBotAdmin(env, message.from))) return reply("ဒီ command ကို group ထဲမှာ bot admin ပဲ သုံးနိုင်ပါတယ်။");
+    const rows = await env.DB.prepare("SELECT action,target_id,details,created_at FROM action_logs WHERE group_chat_id=? ORDER BY id DESC LIMIT 30").bind(message.chat.id).all();
+    const list = (rows.results || []).map((row, index) => `${index + 1}. <b>${escapeHtml(row.action)}</b>${row.target_id ? ` — <code>${escapeHtml(row.target_id)}</code>` : ""}${row.details ? `\n${escapeHtml(row.details)}` : ""}`).join("\n\n");
+    return reply(`<b>🛡 Recent Admin History</b>\n${list || "မှတ်တမ်း မရှိသေးပါ။"}`);
   }
   if (command === "/search" || command === "/find") {
     return query ? sendSearch(env, chatId, query, cleanup) : reply("သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
@@ -594,11 +707,20 @@ export default {
         ctx.waitUntil(importChannelPost(env, update.channel_post).catch((error) => console.error("Channel import failed", error?.message || "unknown error")));
       } else if (update.callback_query) {
         ctx.waitUntil(handleCallback(env, update.callback_query).catch((error) => console.error("Callback failed", error?.message || "unknown error")));
+      } else if (update.chat_member) {
+        ctx.waitUntil(membershipEvent(env, update, "member_status_changed").catch((error) => console.error("Chat member audit failed", error?.message || "unknown error")));
+      } else if (update.my_chat_member) {
+        ctx.waitUntil(membershipEvent(env, update, "bot_status_changed").catch((error) => console.error("Bot status audit failed", error?.message || "unknown error")));
+      } else if (update.edited_message) {
+        ctx.waitUntil(auditAction(env, update.edited_message, "message_edited", null, `message_id=${update.edited_message.message_id}`).catch((error) => console.error("Edit audit failed", error?.message || "unknown error")));
       } else if (update.message?.text) {
         if (isGroupMessage(update.message) && autoDeleteEnabled(env) && update.message.text.trim().startsWith("/")) {
           ctx.waitUntil(queueDelete(env, update.message.chat.id, update.message.message_id, commandDeleteSeconds(env)));
         }
         ctx.waitUntil(handleMessage(env, update.message).catch((error) => console.error("Message handling failed", error?.message || "unknown error")));
+      } else if (update.message) {
+        ctx.waitUntil(rememberChat(env, update.message.chat));
+        ctx.waitUntil(serviceEvent(env, update.message).catch((error) => console.error("Service event audit failed", error?.message || "unknown error")));
       }
       return new Response("OK");
     } catch (error) {
