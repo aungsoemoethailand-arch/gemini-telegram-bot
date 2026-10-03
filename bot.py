@@ -10,11 +10,13 @@ import os
 import re
 import secrets
 import sqlite3
+import subprocess
 import time
 import urllib.request
 import urllib.parse
 import unicodedata
 from html.parser import HTMLParser
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
 from collections import defaultdict
@@ -225,6 +227,51 @@ def save_channel_post(message) -> None:
             extract_book_records(text),
             text,
         )
+
+
+def commit_catalog_database() -> bool:
+    """Commit the catalog DB from GitHub Actions so runner restarts can restore it."""
+    if os.getenv("GITHUB_ACTIONS", "").lower() != "true":
+        return False
+    repo_dir = Path(__file__).resolve().parent
+    db_path = Path(BOOK_DB_PATH)
+    if not db_path.is_absolute():
+        db_path = repo_dir / db_path
+    if not db_path.exists():
+        return False
+    try:
+        run = lambda args: subprocess.run(
+            args,
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        run(["git", "config", "user.name", "github-actions[bot]"])
+        run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"])
+        relative_db_path = str(db_path.relative_to(repo_dir))
+        run(["git", "add", "--", relative_db_path])
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--quiet", "--", relative_db_path],
+            cwd=repo_dir,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        if staged.returncode == 0:
+            return False
+        run(["git", "commit", "-m", "Auto-save catalog database [skip ci]"])
+        try:
+            run(["git", "push", "origin", "HEAD:main"])
+        except subprocess.CalledProcessError:
+            # A code push may have advanced main while this post was saved.
+            # Rebase the local DB commit, then retry once.
+            run(["git", "pull", "--rebase", "origin", "main"])
+            run(["git", "push", "origin", "HEAD:main"])
+        logger.info("Committed catalog database backup to GitHub")
+        return True
+    except subprocess.CalledProcessError as exc:
+        logger.warning("Catalog database Git backup failed at %s", exc.cmd[0])
+        return False
 
 
 def load_seed_catalog() -> int:
@@ -1190,9 +1237,11 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         text = bytes(data).decode("utf-8-sig")
         records = extract_book_records(text)
         save_records(message.chat_id, message.message_id, records, text)
+        await asyncio.to_thread(commit_catalog_database)
         logger.info("Imported %s CSV records from channel document %s", len(records), message.message_id)
         return
     save_channel_post(message)
+    await asyncio.to_thread(commit_catalog_database)
     logger.info("Indexed channel post %s from chat %s", message.message_id, message.chat_id)
 
 

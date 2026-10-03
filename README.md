@@ -139,7 +139,7 @@ returns the original review text from the matching review detail page, together 
 
 Private-channel message links work for channel members. Text posts are indexed as soon as Telegram delivers the update, normally within a few seconds. CSV documents uploaded to the channel are downloaded and imported automatically. The committed seed CSV is loaded during startup, so these books are searchable immediately after the bot starts.
 
-The current GitHub Actions runner has temporary storage. New channel data remains available while that run is active; the committed seed catalog is reloaded after a restart. Persistent additions require a database/host with persistent storage.
+The current GitHub Actions runner has temporary storage. After each new channel post or CSV import, the bot commits `book_catalog.db` to this repository with `[skip ci]`, so the next runner checkout restores the complete catalog before startup. The workflow has `contents: write` permission for this backup. Because this repository is public, the database contents—including channel metadata, links, and stored raw text—are publicly visible by design.
 
 Multiple books can be posted as CSV in one message:
 

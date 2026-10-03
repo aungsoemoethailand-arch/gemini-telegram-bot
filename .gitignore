@@ -1,5 +1,4 @@
 .env
-book_catalog.db
 .venv/
 __pycache__/
 *.py[cod]

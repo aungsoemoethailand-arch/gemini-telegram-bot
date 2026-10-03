@@ -10,7 +10,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: telegram-gemini-bot
@@ -43,6 +43,8 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       OPENROUTER_MODEL: openrouter/free
       MAX_HISTORY_MESSAGES: 12
+      GITHUB_ACTIONS: true
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
