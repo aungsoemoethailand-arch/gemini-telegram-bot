@@ -104,6 +104,27 @@ async function sendMessage(env, chatId, text, extra = {}) {
   });
 }
 
+async function telegramHealth(env) {
+  if (!env.TELEGRAM_BOT_TOKEN) return "missing token";
+  try {
+    const result = await telegram(env, "getMe", {});
+    return result.ok ? "ok" : "telegram error";
+  } catch (error) {
+    console.error("Telegram health failed", error?.message || "unknown error");
+    return "error";
+  }
+}
+
+async function webhookHealth(env) {
+  try {
+    const result = await telegram(env, "getWebhookInfo", {});
+    const info = result.result || {};
+    return `pending ${info.pending_update_count || 0}${info.last_error_message ? `; error ${info.last_error_message}` : ""}`;
+  } catch {
+    return "unavailable";
+  }
+}
+
 async function saveRecords(env, chatId, messageId, records, rawText) {
   const statements = records.map((record, recordNo) => env.DB.prepare(
     `INSERT INTO books(chat_id,message_id,record_no,author,title,link,raw_text,created_at)
@@ -144,6 +165,12 @@ async function searchBooks(env, query) {
   return (rows.results || []).filter((row) => normalize(row.author).includes(needle) || normalize(row.title).includes(needle)).slice(0, MAX_BOOK_RESULTS);
 }
 
+async function searchExactBook(env, query) {
+  const needle = normalize(query);
+  const rows = await env.DB.prepare("SELECT author,title,link FROM books ORDER BY id DESC LIMIT 2000").all();
+  return (rows.results || []).filter((row) => normalize(row.author) === needle || normalize(row.title) === needle).slice(0, MAX_BOOK_RESULTS);
+}
+
 async function sendSearch(env, chatId, query) {
   const rows = await searchBooks(env, query);
   if (!rows.length) return sendMessage(env, chatId, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။");
@@ -180,6 +207,19 @@ async function handleCommand(env, message) {
   return null;
 }
 
+async function handleMessage(env, message) {
+  const text = String(message.text || "").trim();
+  if (!text) return;
+  if (text.startsWith("/")) return handleCommand(env, message);
+  const isGroup = ["group", "supergroup"].includes(message.chat?.type);
+  const replyTarget = message.reply_to_message;
+  if (isGroup && replyTarget?.from && !replyTarget.from.is_bot) return;
+  const rows = isGroup ? await searchExactBook(env, text) : await searchBooks(env, text);
+  if (!rows.length) return null;
+  const result = rows.map((row, i) => `${i + 1}. <b>${escapeHtml(row.title || "ခေါင်းစဉ်မရှိ")}</b>${row.author ? ` — ${escapeHtml(row.author)}` : ""}\n<a href="${escapeHtml(row.link)}">📖 ဖတ်ရန် / ရယူရန်</a>`).join("\n\n");
+  return sendMessage(env, message.chat.id, result);
+}
+
 export default {
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(ensureWebhook(env));
@@ -187,14 +227,16 @@ export default {
 
   async fetch(request, env, ctx) {
     try {
+      if (new URL(request.url).pathname === "/health") {
+        return new Response(`Worker OK; Telegram API: ${await telegramHealth(env)}; Webhook: ${await webhookHealth(env)}`);
+      }
       if (request.method === "GET") return new Response("gemini-telegram-webhook is running");
-      if (new URL(request.url).pathname === "/health") return new Response("OK");
       if (env.TELEGRAM_SECRET_TOKEN && request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.TELEGRAM_SECRET_TOKEN) return new Response("Unauthorized", { status: 401 });
       const update = await request.json();
       if (update.channel_post) {
-        ctx.waitUntil(importChannelPost(env, update.channel_post));
-      } else if (update.message?.text?.startsWith("/")) {
-        ctx.waitUntil(handleCommand(env, update.message));
+        ctx.waitUntil(importChannelPost(env, update.channel_post).catch((error) => console.error("Channel import failed", error?.message || "unknown error")));
+      } else if (update.message?.text) {
+        ctx.waitUntil(handleMessage(env, update.message).catch((error) => console.error("Message handling failed", error?.message || "unknown error")));
       }
       return new Response("OK");
     } catch (error) {
