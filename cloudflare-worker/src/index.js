@@ -125,12 +125,76 @@ async function connectedGroups(env) {
       if (botId) status = (await telegram(env, "getChatMember", { chat_id: row.chat_id, user_id: botId })).result?.status || "unknown";
       if (!["member", "administrator", "creator"].includes(status)) continue;
       const link = chat.invite_link || (chat.username ? `https://t.me/${chat.username}` : "");
-      groups.push({ title: chat.title || row.title || "အမည်မရှိ group", status, link });
+      groups.push({ chatId: row.chat_id, title: chat.title || row.title || "အမည်မရှိ group", status, link });
     } catch (error) {
       console.log("Connected chat check skipped", row.chat_id, error?.message || "unknown error");
     }
   }
   return groups;
+}
+
+const MORNING_GREETING_TEXTS = [
+  "🌅 <b>မင်္ဂလာနံနက်ခင်းပါရှင်</b>\nဒီနေ့လည်း စိတ်ချမ်းသာ၊ ကိုယ်ကျန်းမာပြီး ကောင်းမွန်တဲ့နေ့လေး ဖြစ်ပါစေ 📚✨",
+  "☀️ <b>Good Morning ပါရှင်</b>\nစာကောင်းတစ်အုပ်နဲ့ စိတ်ကောင်းတစ်စင်းကို ယနေ့နေ့သစ်မှာ ရရှိပါစေ 💛",
+  "🌤️ <b>မနက်ခင်းမင်္ဂလာပါ</b>\nအိပ်မက်ကောင်းတွေကို လက်တွေ့အောင်မြင်မှုအဖြစ် ပြောင်းလဲနိုင်တဲ့နေ့ ဖြစ်ပါစေ 🌱",
+  "🌼 <b>သာယာတဲ့မနက်ခင်းပါ</b>\nဒီနေ့ရဲ့ အစတိုင်းမှာ အပြုံးနဲ့ ကံကောင်းခြင်းတွေ ပါလာပါစေ 📖",
+  "🌞 <b>မင်္ဂလာမနက်ခင်းပါ</b>\nစိတ်ထဲမှာ အလင်းရောင်၊ လက်ထဲမှာ စာအုပ်ကောင်းတစ်အုပ် ရှိပါစေ ✨",
+  "☕ <b>Good Morning အားလုံး</b>\nကော်ဖီပူပူတစ်ခွက်လို နွေးထွေးတဲ့နေ့လေး ဖြစ်ပါစေရှင် ☕📚",
+  "🌈 <b>မနက်ခင်းလေး လှပပါစေ</b>\nအခက်အခဲတိုင်းကို အေးအေးဆေးဆေး ကျော်ဖြတ်နိုင်ပါစေ 💜",
+  "🌻 <b>မင်္ဂလာပါရှင်</b>\nဒီနေ့မှာ ကောင်းသောသတင်း၊ ကောင်းသောလူ၊ ကောင်းသောအခွင့်အရေးတွေ တွေ့ပါစေ 🌻",
+  "📚 <b>စာဖတ်သူတို့ရဲ့ မနက်ခင်းမင်္ဂလာပါ</b>\nစာတစ်မျက်နှာက အတွေးတစ်ခုကို ပြောင်းလဲပေးနိုင်ပါတယ်။ ဒီနေ့လည်း စာဖတ်ကြရအောင် ✨",
+  "🌅 <b>နံနက်ခင်းအလင်းရောင်နဲ့အတူ</b>\nစိတ်သစ်၊ အားသစ်နဲ့ နေ့သစ်ကို စတင်နိုင်ပါစေရှင် 💫",
+  "💐 <b>Good Morning ပါ</b>\nမနေ့ကထက် ပိုကောင်းတဲ့ ကိုယ့်ကိုယ်ကို ဒီနေ့မှာ တွေ့ရှိနိုင်ပါစေ 🌷",
+  "🌤️ <b>မင်္ဂလာနံနက်ခင်းပါ</b>\nစိတ်ပူပန်မှုတွေ လျော့ပြီး ပျော်ရွှင်မှုတွေ တိုးပွားပါစေရှင် 😊",
+  "☀️ <b>နေ့သစ်မင်္ဂလာပါ</b>\nရည်မှန်းချက်လေးတစ်ခုကို ဒီနေ့မှာ စတင်အကောင်အထည်ဖော်နိုင်ပါစေ 🚀",
+  "🌿 <b>အေးချမ်းတဲ့မနက်ခင်းပါ</b>\nစိတ်အေးချမ်းခြင်းနဲ့ အောင်မြင်ခြင်းတွေ ဒီနေ့တစ်နေ့လုံး အတူရှိပါစေ 🍃",
+  "📖 <b>စာအုပ်နံ့သင်းတဲ့ မနက်ခင်းပါ</b>\nဖတ်သမျှစာတွေက အသိပညာနဲ့ အားအင်ကောင်းတွေ ဖြစ်လာပါစေရှင် 💙",
+  "🌞 <b>Good Morning သူငယ်ချင်းတို့</b>\nအပြုံးတစ်ပွင့်နဲ့ စတင်တဲ့နေ့ဟာ လှပတဲ့နေ့ပါ။ အားလုံးပြုံးနိုင်ပါစေ 😊",
+  "🌸 <b>မနက်ခင်းမင်္ဂလာပါ</b>\nဒီနေ့မှာ ကိုယ်ချစ်တဲ့သူတွေနဲ့ နွေးထွေးတဲ့အချိန်တွေ ရပါစေ 🌸",
+  "✨ <b>နေ့သစ်ရောက်ပါပြီ</b>\nမဖြစ်နိုင်ဘူးလို့ ထင်ခဲ့တာတွေထဲက တစ်ခုကို ဒီနေ့မှာ ဖြစ်အောင်လုပ်နိုင်ပါစေ 💪",
+  "🌅 <b>မင်္ဂလာနံနက်ခင်းပါရှင်</b>\nအလုပ်အကိုင်အဆင်ပြေ၊ စိတ်ချမ်းသာပြီး ကံကောင်းခြင်းများ ရရှိပါစေ 🙏",
+  "☕ <b>နံနက်ခင်းလေး သာယာပါစေ</b>\nနားလည်မှုကောင်း၊ စကားကောင်း၊ အတွေးကောင်းတွေနဲ့ ပြည့်စုံပါစေ 📚",
+  "🌈 <b>Good Morning ပါ</b>\nဒီနေ့ရဲ့ အခွင့်အရေးတွေကို သတ္တိရှိရှိ ဆုပ်ကိုင်နိုင်ပါစေရှင် 🌈",
+  "🌺 <b>မင်္ဂလာမနက်ခင်းပါ</b>\nအေးချမ်းခြင်းက အိမ်မှာ၊ အောင်မြင်ခြင်းက အလုပ်မှာ၊ ပျော်ရွှင်ခြင်းက နှလုံးသားမှာ ရှိပါစေ 💗",
+  "📚 <b>စာဖတ်သူများအားလုံး မင်္ဂလာပါ</b>\nဒီနေ့ဖတ်မယ့် စာအုပ်က ဘဝအတွက် အတွေးသစ်တစ်ခု ပေးပါစေ 📖",
+  "🌤️ <b>မနက်ခင်းလှလှလေး ဖြစ်ပါစေ</b>\nစတင်ဖို့ အကောင်းဆုံးအချိန်က အခုပါပဲ။ နေ့သစ်ကို ယုံကြည်ချက်နဲ့ စလိုက်ပါ ✨",
+  "🌻 <b>Good Morning အားလုံး</b>\nနေ့တိုင်းမှာ ကျေးဇူးတင်စရာလေးတွေ ရှာတွေ့နိုင်ပါစေရှင် 💛",
+  "☀️ <b>မင်္ဂလာနံနက်ခင်းပါ</b>\nကျန်းမာခြင်း၊ ချမ်းသာခြင်း၊ စိတ်ချမ်းသာခြင်းတို့နဲ့ ပြည့်စုံပါစေ 🙏",
+  "🌿 <b>သာယာတဲ့နေ့သစ်ပါရှင်</b>\nစိတ်ညစ်စရာတွေ လွင့်ပါးပြီး ကောင်းမွန်တဲ့အရာတွေ နီးကပ်လာပါစေ 🍀",
+  "💫 <b>မနက်ခင်းမင်္ဂလာပါ</b>\nအိပ်မက်တွေကို မမေ့ဘဲ ဒီနေ့မှာ ခြေလှမ်းတစ်လှမ်း ရှေ့ဆက်နိုင်ပါစေ 🚶",
+  "🌸 <b>Good Morning ပါရှင်</b>\nဒီနေ့က မနေ့ကထက် ပိုလှပပြီး မနက်ဖြန်အတွက် ပိုကောင်းတဲ့အမှတ်တရ ဖြစ်ပါစေ 🌸",
+  "📖 <b>စာအုပ်ကောင်းနဲ့ နေ့သစ်စကြရအောင်</b>\nအားလုံးအတွက် အောင်မြင်ခြင်းနဲ့ ပျော်ရွှင်ခြင်းများ ရရှိပါစေ ✨",
+];
+
+function bangkokClock() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Bangkok", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  return { date: `${values.year}-${values.month}-${values.day}`, hour: Number(values.hour), minute: Number(values.minute) };
+}
+
+async function sendMorningGreetings(env) {
+  const clock = bangkokClock();
+  if (clock.hour !== 7 || clock.minute > 4) return;
+  const groups = await connectedGroups(env);
+  const dayNumber = Math.floor(Date.parse(`${clock.date}T00:00:00Z`) / 86400000);
+  const greeting = MORNING_GREETING_TEXTS[((dayNumber % MORNING_GREETING_TEXTS.length) + MORNING_GREETING_TEXTS.length) % MORNING_GREETING_TEXTS.length];
+  for (const group of groups) {
+    const reservation = await env.DB.prepare(
+      "INSERT OR IGNORE INTO morning_greetings(chat_id,greeting_date,greeting_text,sent_at) VALUES(?,?,?,?)"
+    ).bind(group.chatId, clock.date, greeting, Math.floor(Date.now() / 1000)).run();
+    if (reservation.meta?.changes !== 1) continue;
+    try {
+      const sent = await sendMessage(env, group.chatId, greeting);
+      await env.DB.prepare("UPDATE morning_greetings SET message_id=? WHERE chat_id=? AND greeting_date=?")
+        .bind(sent.result?.message_id || null, group.chatId, clock.date).run();
+    } catch (error) {
+      await env.DB.prepare("DELETE FROM morning_greetings WHERE chat_id=? AND greeting_date=?").bind(group.chatId, clock.date).run();
+      console.log("Morning greeting failed", group.chatId, error?.message || "unknown error");
+    }
+  }
 }
 
 async function resolveUserId(env, value) {
@@ -514,7 +578,7 @@ async function handleCallback(env, query) {
 
 export default {
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(Promise.all([ensureWebhook(env), cleanupDue(env)]));
+    ctx.waitUntil(Promise.all([ensureWebhook(env), cleanupDue(env), sendMorningGreetings(env)]));
   },
 
   async fetch(request, env, ctx) {
