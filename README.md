@@ -70,6 +70,16 @@ Authorized users can search from the bot DM with:
 /search စာရေးသူ
 ```
 
+စာရင်းအပြည့်အစုံကြည့်ရန်:
+
+```text
+/author
+/books
+```
+
+စာရေးသူစာရင်းနှင့် စာအုပ်စာရင်းများကို Telegram message limit မကျော်အောင်
+စာမျက်နှာခွဲပြီး Previous/Next ခလုတ်များဖြင့် ပြပေးသည်။
+
 In groups, authorized users can search in any of these ways:
 
 ```text

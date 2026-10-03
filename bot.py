@@ -82,6 +82,7 @@ user_history: dict[int, list[types.Content]] = defaultdict(list)
 allowed_user_ids: set[int] = {ADMIN_TELEGRAM_ID} if ADMIN_TELEGRAM_ID else set()
 known_usernames: dict[str, int] = {}
 search_sessions: dict[str, dict[str, str]] = {}
+catalog_sessions: dict[str, dict[str, object]] = {}
 review_cache: dict[str, object] = {"loaded_at": 0.0, "posts": []}
 
 SYSTEM_INSTRUCTION = (
@@ -584,6 +585,82 @@ async def handle_search_page(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.answer("ရှာဖွေမှု page မမှန်ပါ။", show_alert=True)
 
 
+def catalog_list_items(kind: str) -> list[tuple[str, str]]:
+    """Return unique catalog entries for /author and /books listings."""
+    with sqlite3.connect(BOOK_DB_PATH) as db:
+        rows = db.execute(
+            "SELECT chat_id, author, title, link, raw_text FROM books WHERE chat_id != ? ORDER BY id DESC",
+            (-2000000001,),
+        ).fetchall()
+    rows = [
+        (author, title)
+        for chat_id, author, title, link, raw_text in rows
+        if not is_review_record(chat_id, author, title, link, raw_text)
+    ]
+    if kind == "authors":
+        values = sorted({author.strip() for author, _title in rows if author.strip()}, key=str.casefold)
+        return [(value, "") for value in values]
+    seen: set[tuple[str, str]] = set()
+    items: list[tuple[str, str]] = []
+    for author, title in rows:
+        author, title = author.strip(), title.strip()
+        if not title or (author, title) in seen:
+            continue
+        seen.add((author, title))
+        items.append((title, author))
+    items.sort(key=lambda item: (item[0].casefold(), item[1].casefold()))
+    return items
+
+
+async def send_catalog_page(
+    update: Update,
+    kind: str,
+    items: list[tuple[str, str]],
+    page: int = 0,
+    token: str | None = None,
+) -> None:
+    page_size = 20
+    page_count = max(1, (len(items) + page_size - 1) // page_size)
+    page = max(0, min(page, page_count - 1))
+    if token is None:
+        token = secrets.token_urlsafe(6)
+        catalog_sessions[token] = {"kind": kind, "items": items}
+    visible = items[page * page_size : (page + 1) * page_size]
+    title = "စာရေးသူစာရင်း" if kind == "authors" else "စာအုပ်စာရင်း"
+    lines = [f"<b>📚 {title} ({len(items)} ခု)</b>", f"စာမျက်နှာ {page + 1}/{page_count}"]
+    for index, (name, author) in enumerate(visible, page * page_size + 1):
+        if kind == "authors":
+            lines.append(f"\n<b>{index}. {html.escape(name)}</b>")
+        else:
+            author_line = f"\nစာရေးသူ: {html.escape(author)}" if author else ""
+            lines.append(f"\n<b>{index}. {html.escape(name)}</b>{author_line}")
+    buttons = []
+    if page > 0:
+        buttons.append(InlineKeyboardButton("⬅️ နောက်ပြန်", callback_data=f"catalogpage:{token}:{page - 1}"))
+    if page < page_count - 1:
+        buttons.append(InlineKeyboardButton("ရှေ့ဆက် ➡️", callback_data=f"catalogpage:{token}:{page + 1}"))
+    markup = InlineKeyboardMarkup([buttons]) if buttons else None
+    if update.callback_query:
+        await update.callback_query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=markup)
+    else:
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=markup)
+
+
+async def handle_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    try:
+        _, token, page_text = query.data.split(":", 2)
+        page = int(page_text)
+        session = catalog_sessions.get(token)
+        if not session:
+            await query.answer("စာရင်း session သက်တမ်းကုန်သွားပါပြီ။ command ကို ပြန်ရိုက်ပါ။", show_alert=True)
+            return
+        await send_catalog_page(update, str(session["kind"]), session["items"], page=page, token=token)  # type: ignore[arg-type]
+    except (ValueError, IndexError, TypeError):
+        await query.answer("စာရင်း page မမှန်ပါ။", show_alert=True)
+
+
 async def answer_from_catalog(update: Update, question: str, results: list[tuple[str, str, str, str]]) -> None:
     lines = ["<b>📖 Channel ထဲက မူရင်းအညွှန်း</b>"]
     buttons = []
@@ -794,6 +871,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "<b>📚 အသုံးပြုပုံလေးပါရှင်</b>\n\n"
         "<b>စာအုပ် link ရှာရန်</b>\n/search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ\n\n"
+        "<b>စာရင်းအပြည့်အစုံ</b>\n/author — ရှိသမျှ စာရေးသူများ\n/books — ရှိသမျှ စာအုပ်များ\n\n"
         "<b>မူရင်းအညွှန်းဖတ်ရန်</b>\n/ask စာအုပ်နာမည်\n\n"
         "Group ထဲမှာတော့ @YourBot နဲ့ mention လုပ်ပြီး မေးလို့ရပါတယ်ရှင် 💜",
         parse_mode="HTML",
@@ -905,6 +983,22 @@ async def search_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await reply_with_mention(update, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။")
         return
     await send_search_results(update, results, search_query=query)
+
+
+async def list_authors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    items = await asyncio.to_thread(catalog_list_items, "authors")
+    if not items:
+        await reply_with_mention(update, "စာရေးသူစာရင်း မရှိသေးပါ။")
+        return
+    await send_catalog_page(update, "authors", items)
+
+
+async def list_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    items = await asyncio.to_thread(catalog_list_items, "books")
+    if not items:
+        await reply_with_mention(update, "စာအုပ်စာရင်း မရှိသေးပါ။")
+        return
+    await send_catalog_page(update, "books", items)
 
 
 async def ask_books(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1036,8 +1130,11 @@ def main() -> None:
     application.add_handler(CommandHandler("update", update_reviews))
     application.add_handler(CommandHandler("myid", my_id))
     application.add_handler(CommandHandler("search", search_books))
+    application.add_handler(CommandHandler("author", list_authors))
+    application.add_handler(CommandHandler("books", list_books))
     application.add_handler(CommandHandler("ask", ask_books))
     application.add_handler(CallbackQueryHandler(handle_search_page, pattern=r"^bookpage:"))
+    application.add_handler(CallbackQueryHandler(handle_catalog_page, pattern=r"^catalogpage:"))
     application.add_handler(CallbackQueryHandler(handle_menu, pattern=r"^menu:"))
     application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POSTS, handle_channel_post))
     application.add_handler(CommandHandler("reset", reset))
