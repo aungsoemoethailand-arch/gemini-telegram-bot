@@ -83,7 +83,15 @@ allowed_user_ids: set[int] = {ADMIN_TELEGRAM_ID} if ADMIN_TELEGRAM_ID else set()
 known_usernames: dict[str, int] = {}
 search_sessions: dict[str, dict[str, str]] = {}
 catalog_sessions: dict[str, dict[str, object]] = {}
+auto_cleanup_records: dict[int, dict[str, object]] = {}
 review_cache: dict[str, object] = {"loaded_at": 0.0, "posts": []}
+
+AUTO_DELETE_ENABLED = os.getenv("AUTO_DELETE_ENABLED", "1").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+COMMAND_AUTO_DELETE_SECONDS = int(os.getenv("COMMAND_AUTO_DELETE_SECONDS", "30"))
+AUTO_DELETE_MINUTES = int(os.getenv("AUTO_DELETE_MINUTES", "3"))
+AUTO_DELETE_ATTACH_WINDOW_SECONDS = 120
 
 SYSTEM_INSTRUCTION = (
     "You are a warm, friendly Burmese-speaking female book assistant. "
@@ -503,6 +511,111 @@ def is_book_question(text: str) -> bool:
 def requester_mention(update: Update) -> str:
     user = update.effective_user
     return mention_html(user.id, user.full_name or "User")
+
+
+def _extract_sent_messages(result):
+    if result is None:
+        return []
+    if isinstance(result, list):
+        return [message for message in result if message is not None]
+    return [result]
+
+
+def _attach_auto_delete_messages(application, chat_id, messages) -> None:
+    if not messages or chat_id is None:
+        return
+    record = auto_cleanup_records.get(chat_id)
+    if not record:
+        return
+    if time.time() - float(record["created_at"]) > AUTO_DELETE_ATTACH_WINDOW_SECONDS:
+        return
+    for message in messages:
+        replied = getattr(message, "reply_to_message", None)
+        if replied is not None and (
+            getattr(replied, "new_chat_members", None)
+            or getattr(replied, "left_chat_member", None)
+        ):
+            continue
+        record["ids"].add(getattr(message, "message_id", None))
+
+
+async def _delete_later(bot, chat_id: int, message_id: int, delay: int) -> None:
+    await asyncio.sleep(max(0, delay))
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        # Messages may already be deleted or the bot may lack delete rights.
+        pass
+
+
+async def _cleanup_auto_delete_record(bot, chat_id: int, record: dict[str, object]) -> None:
+    await asyncio.sleep(max(0, AUTO_DELETE_MINUTES * 60))
+    if auto_cleanup_records.get(chat_id) is record:
+        auto_cleanup_records.pop(chat_id, None)
+    for message_id in set(record["ids"]):
+        if message_id is None:
+            continue
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+
+
+async def track_command_for_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Schedule cleanup for group commands before their handlers send replies."""
+    if not AUTO_DELETE_ENABLED or not update.message or not update.effective_chat:
+        return
+    if update.effective_chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        return
+    chat_id = update.effective_chat.id
+    message_id = update.message.message_id
+    asyncio.create_task(
+        _delete_later(context.bot, chat_id, message_id, COMMAND_AUTO_DELETE_SECONDS)
+    )
+    if AUTO_DELETE_MINUTES <= 0:
+        return
+    record: dict[str, object] = {
+        "trigger": message_id,
+        "created_at": time.time(),
+        "ids": set(),
+    }
+    auto_cleanup_records[chat_id] = record
+    asyncio.create_task(_cleanup_auto_delete_record(context.bot, chat_id, record))
+
+
+def install_auto_cleanup(application) -> None:
+    """Track bot sends made after a group command, like the reference bot."""
+    bot_cls = type(application.bot)
+    method_names = (
+        "send_message", "send_photo", "send_document", "send_media_group",
+        "send_animation", "send_video", "send_audio", "send_voice",
+        "send_video_note", "send_sticker", "send_poll", "send_dice",
+        "send_location", "send_venue", "send_contact",
+    )
+    for name in method_names:
+        original = getattr(bot_cls, name, None)
+        if original is None or getattr(original, "_auto_cleanup_wrapped", False):
+            continue
+
+        async def wrapper(self, *args, _original=original, **kwargs):
+            skip = kwargs.pop("_cleanup_skip", False)
+            result = await _original(self, *args, **kwargs)
+            if not skip:
+                chat_id = kwargs.get("chat_id")
+                if chat_id is None and args:
+                    chat_id = args[0]
+                if chat_id is not None:
+                    _attach_auto_delete_messages(application, chat_id, _extract_sent_messages(result))
+            return result
+
+        wrapper._auto_cleanup_wrapped = True
+        setattr(bot_cls, name, wrapper)
+    logger.info(
+        "Auto-delete: %s; group commands %ss, bot results %smin",
+        "enabled" if AUTO_DELETE_ENABLED else "disabled",
+        COMMAND_AUTO_DELETE_SECONDS,
+        AUTO_DELETE_MINUTES,
+    )
 
 
 def format_assistant_html(text: str) -> str:
@@ -1125,6 +1238,11 @@ def main() -> None:
     logger.info("Removed %s duplicate channel catalog rows", cleanup_duplicate_channel_books())
     logger.info("Configured Groq fallback key slots: %s", len(GROQ_API_KEYS))
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    install_auto_cleanup(application)
+    application.add_handler(
+        MessageHandler(filters.COMMAND, track_command_for_cleanup),
+        group=-1,
+    )
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("update", update_reviews))

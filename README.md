@@ -59,6 +59,16 @@ Add one or more Groq secrets named `GROQ_API_KEY`, `GROQ_API_KEY_2`, `GROQ_API_K
 
 The current deployment uses GitHub Actions. A run can stay alive for up to 350 minutes, and a scheduled workflow attempts to restart it every 5 hours. This is not a guaranteed 24/7 service: GitHub runner startup delays, cancellation delays, or quota limits can create downtime. For reliable always-on operation, move the bot to a persistent VPS or hosting service.
 
+## Group message auto-delete
+
+Following the reference Group Guardian Bot's safe cleanup policy:
+
+- Only group/supergroup command messages are deleted; ordinary member messages are never deleted.
+- Group command messages are deleted after `COMMAND_AUTO_DELETE_SECONDS` (default: 30 seconds).
+- Bot replies/results sent shortly after a group command are deleted after `AUTO_DELETE_MINUTES` (default: 3 minutes).
+- Bot DM messages are never auto-deleted.
+- Set `AUTO_DELETE_ENABLED=0` to disable all automatic cleanup, or `AUTO_DELETE_MINUTES=0` to keep bot results while still removing group commands.
+
 ## Private-channel book catalog
 
 Add the bot as an administrator in the private Telegram channel. New channel posts are indexed automatically. The bot stores the post text, author, book title, and the first URL it finds in a local SQLite catalog.
