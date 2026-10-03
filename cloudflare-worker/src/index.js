@@ -224,6 +224,18 @@ async function sendMessage(env, chatId, text, extra = {}) {
   return result;
 }
 
+async function editMessage(env, chatId, messageId, text, extra = {}) {
+  const { __deleteAfterSeconds, ...telegramExtra } = extra;
+  return telegram(env, "editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...telegramExtra,
+  });
+}
+
 async function telegramHealth(env) {
   if (!env.TELEGRAM_BOT_TOKEN) return "missing token";
   try {
@@ -291,7 +303,7 @@ async function searchExactBook(env, query) {
   return (rows.results || []).filter((row) => normalize(row.author) === needle || normalize(row.title) === needle).slice(0, MAX_BOOK_RESULTS);
 }
 
-async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = false, token = "") {
+async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = false, token = "", editMessageId = null) {
   const rows = exact ? await searchExactBook(env, query) : await searchBooks(env, query);
   if (!rows.length) return sendMessage(env, chatId, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။", cleanup);
   const pageSize = 5;
@@ -311,7 +323,8 @@ async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = fa
     if (safePage < pageCount - 1) nav.push({ text: "ရှေ့ဆက် ➡️", callback_data: `search:${token}:${safePage + 1}` });
     buttons.push(nav);
   }
-  return sendMessage(env, chatId, lines.join("\n"), { ...cleanup, reply_markup: { inline_keyboard: buttons } });
+  const payload = { ...cleanup, reply_markup: { inline_keyboard: buttons } };
+  return editMessageId ? editMessage(env, chatId, editMessageId, lines.join("\n"), payload) : sendMessage(env, chatId, lines.join("\n"), payload);
 }
 
 async function sendSearch(env, chatId, query, cleanup = {}, exact = false) {
@@ -322,7 +335,7 @@ async function sendSearch(env, chatId, query, cleanup = {}, exact = false) {
   return sendSearchPage(env, chatId, query, 0, cleanup, exact, token);
 }
 
-async function catalogPage(env, chatId, kind, page, cleanup = {}) {
+async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId = null) {
   const pageSize = 20;
   let items;
   if (kind === "authors") {
@@ -352,7 +365,8 @@ async function catalogPage(env, chatId, kind, page, cleanup = {}) {
     if (safePage < pageCount - 1) navigation.push({ text: "ရှေ့ဆက် ➡️", callback_data: `catalog:${kind}:${safePage + 1}` });
     buttons.push(navigation);
   }
-  return sendMessage(env, chatId, lines.join("\n"), { ...cleanup, ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}) });
+  const payload = { ...cleanup, ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}) };
+  return editMessageId ? editMessage(env, chatId, editMessageId, lines.join("\n"), payload) : sendMessage(env, chatId, lines.join("\n"), payload);
 }
 
 async function sendReviews(env, chatId, query, reviews, cleanup = {}) {
@@ -449,10 +463,10 @@ async function handleCallback(env, query) {
     const stored = String(session.query || "");
     const exact = stored.startsWith("__exact__");
     const query = stored.replace(/^__(?:exact|fuzzy)__/, "");
-    return sendSearchPage(env, message.chat.id, query, Number(searchMatch[2]), {}, exact, searchMatch[1]);
+    return sendSearchPage(env, message.chat.id, query, Number(searchMatch[2]), {}, exact, searchMatch[1], message.message_id);
   }
   const catalogMatch = String(action || "").match(/^catalog:(authors|books):(\d+)$/);
-  if (catalogMatch) return catalogPage(env, message.chat.id, catalogMatch[1], Number(catalogMatch[2]));
+  if (catalogMatch) return catalogPage(env, message.chat.id, catalogMatch[1], Number(catalogMatch[2]), {}, message.message_id);
 }
 
 export default {
