@@ -34,7 +34,7 @@ function resultDeleteSeconds(env) {
 }
 
 function adminId(env) {
-  return String(env.ADMIN_TELEGRAM_ID || "").trim();
+  return String(env.ADMIN_TELEGRAM_ID || env.ADMIN_TELEGRAM_ID2 || "").trim();
 }
 
 async function rememberUser(env, user) {
