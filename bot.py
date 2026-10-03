@@ -393,7 +393,18 @@ def clean_search_query(query: str) -> str:
     return query.strip()
 
 
-def search_catalog(query: str, limit: int | None = 10) -> list[tuple[str, str, str, str]]:
+def search_catalog(
+    query: str,
+    limit: int | None = 10,
+    exact_fields_only: bool = False,
+) -> list[tuple[str, str, str, str]]:
+    """Search the catalog, optionally requiring an exact author/title match.
+
+    Group plain-text routing uses ``exact_fields_only`` to avoid replying to
+    normal conversation because a common word appears inside review text,
+    links, or a fuzzy title candidate. Explicit /search and DM searches keep
+    the broader matching behavior.
+    """
     query = clean_search_query(query)
     normalized_query = normalize_search_text(query)
     if not normalized_query:
@@ -410,6 +421,16 @@ def search_catalog(query: str, limit: int | None = 10) -> list[tuple[str, str, s
         if is_review_record(chat_id, author, title, link, raw_text):
             continue
         visible_row = (author, title, link, raw_text)
+        if exact_fields_only:
+            if normalized_query not in {
+                normalize_search_text(author),
+                normalize_search_text(title),
+            }:
+                continue
+            matches.append(visible_row)
+            if limit is not None and len(matches) >= limit:
+                break
+            continue
         # Only the catalog's explicit author/title fields are searchable.
         # Matching raw review text or URLs made ordinary group conversation
         # trigger a book reply whenever a common word appeared in a record.
@@ -965,9 +986,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not prompt:
         return
     if is_group and not mentioned:
-        # In groups, a plain title/author is a fast link search. Do not run
-        # review lookup or AI/general replies unless the bot is addressed.
-        direct_results = search_catalog(prompt, limit=None)
+        # In groups, only an exact author/title is a fast link search. This
+        # mirrors the reference bot's no-spam routing: fuzzy/substring search
+        # is reserved for explicit commands or an intentional @mention.
+        direct_results = search_catalog(prompt, limit=None, exact_fields_only=True)
         if direct_results:
             await send_search_results(update, direct_results, search_query=prompt)
         return
