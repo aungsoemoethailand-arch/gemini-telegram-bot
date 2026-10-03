@@ -950,6 +950,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     is_group = update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
     bot_username = (context.bot.username or "").casefold()
     mentioned = bot_username and f"@{bot_username}" in update.message.text.casefold()
+    reply_target = update.message.reply_to_message
+    replying_to_member = (
+        is_group
+        and reply_target is not None
+        and reply_target.from_user is not None
+        and not reply_target.from_user.is_bot
+    )
+    if replying_to_member and not mentioned:
+        # Do not interrupt member-to-member conversations. A direct bot
+        # mention still counts as an explicit request for a reply.
+        return
     prompt = update.message.text.strip()
     if not prompt:
         return
