@@ -306,7 +306,7 @@ async function ensureWebhook(env) {
   await telegram(env, "setWebhook", {
     url: env.WORKER_URL,
     secret_token: env.TELEGRAM_SECRET_TOKEN || undefined,
-    allowed_updates: ["message", "edited_message", "channel_post", "callback_query", "chat_member", "my_chat_member"],
+    allowed_updates: ["message", "edited_message", "channel_post", "callback_query", "chat_member", "my_chat_member", "chat_join_request"],
   });
 }
 
@@ -545,6 +545,97 @@ async function serviceEvent(env, message) {
   else if (message.delete_chat_photo) { action = "chat_photo_deleted"; }
   else return;
   await auditAction(env, { ...message, from: message.from || message.left_chat_member || null }, action, null, details);
+  if (message.new_chat_members?.length) await sendMembershipGreetings(env, message, "welcome");
+  if (message.left_chat_member) await sendMembershipGreetings(env, message, "goodbye");
+}
+
+const WELCOME_TEXTS = [
+  "🌟 <b>နွေးထွေးစွာ ကြိုဆိုပါတယ်</b>\nဒီ Group လေးမှာ ပျော်ရွှင်စွာ စာဖတ်ပြီး အသိပညာကောင်းများ ရရှိပါစေ 📚",
+  "🌸 <b>ကြိုဆိုပါတယ်ရှင်</b>\nစာအုပ်ကောင်းတွေ၊ မိတ်ဆွေကောင်းတွေနဲ့ နွေးထွေးတဲ့နေရာလေး ဖြစ်ပါစေ 💜",
+  "📖 <b>Welcome ပါ</b>\nဒီနေ့ကစပြီး စာဖတ်ခြင်းရဲ့ ပျော်ရွှင်မှုတွေကို အတူမျှဝေကြရအောင် ✨",
+  "☀️ <b>မင်္ဂလာပါ၊ ကြိုဆိုပါတယ်</b>\nGroup ရဲ့ စာပေခရီးမှာ အမှတ်တရကောင်းတွေ ရရှိပါစေရှင် 🌈",
+  "🌿 <b>နွေးနွေးထွေးထွေး ကြိုဆိုပါတယ်</b>\nစိတ်အေးချမ်းပြီး အကျိုးရှိတဲ့ စာဖတ်ချိန်များ ပိုင်ဆိုင်ပါစေ 📚",
+  "💐 <b>Welcome to our reading family</b>\nဒီနေရာလေးမှာ စိတ်ချမ်းသာပြီး အမြဲကြိုဆိုခံရပါစေရှင် 😊",
+  "✨ <b>မိတ်ဆွေအသစ်ကို ကြိုဆိုပါတယ်</b>\nစာအုပ်တစ်အုပ်က မိတ်ဆွေတစ်ယောက်လိုပါပဲ။ အတူတူ ရှာဖွေဖတ်ကြရအောင် 📖",
+  "🌻 <b>Group ထဲကို ဝင်ရောက်လာတဲ့အတွက် ဝမ်းသာပါတယ်</b>\nကောင်းမွန်တဲ့ စာပေခရီးလေး ဖြစ်ပါစေ 💛",
+  "📚 <b>စာဖတ်သူမိသားစုထဲ ကြိုဆိုပါတယ်</b>\nအတွေးသစ်၊ အသိသစ်နဲ့ နေ့ရက်ကောင်းများ ရရှိပါစေရှင် 🌼",
+  "🎉 <b>Welcome ပါရှင်</b>\nGroup လေးရဲ့ နွေးထွေးမှုနဲ့ စာအုပ်ကောင်းများကို ခံစားနိုင်ပါစေ 💫",
+  "🌙 <b>မိတ်ဆွေအသစ်ကို လှိုက်လှဲစွာ ကြိုဆိုပါတယ်</b>\nဖတ်ရှုမှုတိုင်းက ပျော်ရွှင်မှုဖြစ်ပါစေ 📖",
+  "💙 <b>ကြိုဆိုပါတယ်</b>\nမေးချင်တာမေး၊ ဖတ်ချင်တာဖတ်၊ မျှဝေချင်တာမျှဝေပြီး အတူတူ တိုးတက်ကြရအောင် 🌱",
+  "🌈 <b>Welcome လို့ ပြောလိုက်ပါတယ်</b>\nဒီ Group မှာ ကောင်းမွန်တဲ့ မိတ်ဆွေတွေနဲ့ တွေ့ဆုံနိုင်ပါစေရှင် ✨",
+  "🍀 <b>မင်္ဂလာပါ၊ အားလုံးက ကြိုဆိုနေပါတယ်</b>\nစာဖတ်ခြင်းကနေ အားအင်နဲ့ အလင်းရောင် ရရှိပါစေ 📚",
+  "🌷 <b>နွေးထွေးစွာ ကြိုဆိုပါတယ်</b>\nဒီနေ့မှစပြီး ကောင်းမွန်တဲ့ စာအုပ်အဖော်တွေ ရရှိပါစေရှင် 💗",
+  "🕊️ <b>Welcome ပါ</b>\nစိတ်အေးချမ်းမှုနဲ့ အသိပညာကောင်းတွေ ဒီ Group ထဲမှာ အမြဲရှိပါစေ 📖",
+  "⭐ <b>အသစ်ရောက်လာတဲ့ မိတ်ဆွေကို ကြိုဆိုပါတယ်</b>\nစာပေချစ်သူတို့ရဲ့ နေရာလေးမှာ ပျော်ရွှင်ပါစေ 🌟",
+  "☕ <b>မင်္ဂလာပါရှင်</b>\nကော်ဖီတစ်ခွက်နဲ့ စာအုပ်ကောင်းတစ်အုပ်လို နွေးထွေးတဲ့ Group ဖြစ်ပါစေ ☕📚",
+  "🌺 <b>ဝမ်းမြောက်စွာ ကြိုဆိုပါတယ်</b>\nအတူဖတ်၊ အတူမျှဝေ၊ အတူတိုးတက်ကြရအောင်ရှင် 💐",
+  "📚 <b>စာပေမိတ်ဆွေသစ်ကို ကြိုဆိုပါတယ်</b>\nဒီ Group ထဲက နေ့ရက်တိုင်း အဓိပ္ပာယ်ရှိပါစေ ✨",
+];
+
+const GOODBYE_TEXTS = [
+  "🌙 <b>သွားတော့မယ့် မိတ်ဆွေကို နှုတ်ဆက်ပါတယ်</b>\nရှေ့ဆက်မယ့် ခရီးလမ်းမှာ ကောင်းခြင်းများနဲ့ တွေ့ပါစေရှင် 💜",
+  "🌿 <b>Goodbye ပါရှင်</b>\nအတူရှိခဲ့တဲ့အချိန်တွေအတွက် ကျေးဇူးတင်ပါတယ်။ နောက်တစ်ချိန် ပြန်တွေ့ကြပါစေ 📚",
+  "🌸 <b>နှုတ်ဆက်ပါတယ်</b>\nဘယ်နေရာရောက်ရောက် စိတ်ချမ်းသာပြီး အောင်မြင်ပါစေရှင် 🌸",
+  "✨ <b>သွားတဲ့လမ်းမှာ အဆင်ပြေပါစေ</b>\nဒီ Group က မိတ်ဆွေကောင်းတွေကို မမေ့ပါဘူးနော် 💫",
+  "☀️ <b>Goodbye နဲ့ အကောင်းဆုံးဆုတောင်းပေးပါတယ်</b>\nနေ့ရက်တိုင်း လှပပြီး ပျော်ရွှင်ပါစေ 📖",
+  "🌈 <b>နှုတ်ဆက်ပါတယ် မိတ်ဆွေ</b>\nဘဝစာမျက်နှာသစ်တိုင်းမှာ ကောင်းသောအရာတွေ ပြည့်ပါစေ 🌈",
+  "💐 <b>ခဏတာခွဲခွာရပေမယ့် အမှတ်တရကောင်းတွေ ကျန်ခဲ့ပါတယ်</b>\nကောင်းမွန်တဲ့နေ့ရက်များ ရရှိပါစေရှင် 💐",
+  "📚 <b>မိတ်ဆွေကို နွေးထွေးစွာ နှုတ်ဆက်ပါတယ်</b>\nစာအုပ်ကောင်းတွေနဲ့ အမြဲတွေ့ဆုံနိုင်ပါစေ 📖",
+  "🕊️ <b>သွားတော့မယ့် မိတ်ဆွေကို ဆုမွန်ကောင်းတောင်းပါတယ်</b>\nစိတ်အေးချမ်းပြီး လမ်းခရီးဖြောင့်ဖြူးပါစေရှင် 🕊️",
+  "🌻 <b>Goodbye ပါ</b>\nအတူရှိခဲ့တဲ့အချိန်တွေက အမြဲတမ်း လှပတဲ့အမှတ်တရ ဖြစ်နေပါစေ 🌻",
+  "💙 <b>နှုတ်ဆက်ပါတယ်ရှင်</b>\nပြန်ဆုံနိုင်မယ့်နေ့အထိ ကျန်းမာပျော်ရွှင်ပါစေ 💙",
+  "⭐ <b>မိတ်ဆွေကို ချစ်ခြင်းနဲ့ နှုတ်ဆက်ပါတယ်</b>\nနောက်ထပ်တွေ့မယ့်နေရာတိုင်းမှာ အောင်မြင်ပါစေ ⭐",
+];
+
+async function nextGreeting(env, chatId, kind, pool) {
+  const row = await env.DB.prepare("SELECT last_index FROM greeting_state WHERE chat_id=? AND kind=?").bind(chatId, kind).first();
+  const next = (Number(row?.last_index ?? -1) + 1) % pool.length;
+  await env.DB.prepare("INSERT OR REPLACE INTO greeting_state(chat_id,kind,last_index) VALUES(?,?,?)").bind(chatId, kind, next).run();
+  return pool[next];
+}
+
+async function sendTemporaryMembershipMessage(env, chatId, text) {
+  const sent = await sendMessage(env, chatId, text);
+  if (sent.result?.message_id) await deleteAfterDelay(env, chatId, sent.result.message_id, 30000);
+}
+
+async function sendMembershipGreetings(env, message, kind) {
+  const members = kind === "welcome" ? message.new_chat_members || [] : [message.left_chat_member];
+  for (const member of members) {
+    if (!member?.id) continue;
+    const label = `<a href="tg://user?id=${member.id}">${escapeHtml([member.first_name, member.last_name].filter(Boolean).join(" ") || member.username || "မိတ်ဆွေ")}</a>`;
+    const text = await nextGreeting(env, message.chat.id, kind, kind === "welcome" ? WELCOME_TEXTS : GOODBYE_TEXTS);
+    await sendTemporaryMembershipMessage(env, message.chat.id, `${label}\n${text}`);
+  }
+}
+
+function looksLikeSpamJoinRequest(request) {
+  const user = request.from || {};
+  const value = `${user.first_name || ""} ${user.last_name || ""} ${user.username || ""} ${request.bio || ""}`.toLowerCase();
+  if (/(https?:\/\/|t\.me\/|telegram\.me\/|casino|betting|พนัน|crypto|airdrop|giveaway|loan|เครดิตฟรี|porn|sex|xxx|onlyfans|วีไอพี)/i.test(value)) return true;
+  if ((value.match(/[0-9]/g) || []).length >= 7) return true;
+  if (/(.)\1{5,}/u.test(value.replace(/\s+/g, ""))) return true;
+  return false;
+}
+
+async function handleJoinRequest(env, request) {
+  const chat = request.chat;
+  const user = request.from;
+  if (!chat || !user) return;
+  await rememberChat(env, chat);
+  const message = { chat, from: user };
+  try {
+    if (looksLikeSpamJoinRequest(request)) {
+      await telegram(env, "declineChatJoinRequest", { chat_id: chat.id, user_id: user.id });
+      await auditAction(env, message, "join_request_declined_spam", user.id, `${user.username || user.first_name || "unknown"}`);
+      return;
+    }
+    await telegram(env, "approveChatJoinRequest", { chat_id: chat.id, user_id: user.id });
+    await auditAction(env, message, "join_request_approved", user.id, `${user.username || user.first_name || "unknown"}`);
+  } catch (error) {
+    console.log("Join request handling failed", error?.message || "unknown error");
+    await auditAction(env, message, "join_request_error", user.id, error?.message || "Telegram API error");
+  }
 }
 
 async function membershipEvent(env, update, kind = "member_status_changed") {
@@ -774,6 +865,8 @@ export default {
         ctx.waitUntil(importChannelPost(env, update.channel_post).catch((error) => console.error("Channel import failed", error?.message || "unknown error")));
       } else if (update.callback_query) {
         ctx.waitUntil(handleCallback(env, update.callback_query).catch((error) => console.error("Callback failed", error?.message || "unknown error")));
+      } else if (update.chat_join_request) {
+        ctx.waitUntil(handleJoinRequest(env, update.chat_join_request).catch((error) => console.error("Join request failed", error?.message || "unknown error")));
       } else if (update.chat_member) {
         ctx.waitUntil(membershipEvent(env, update, "member_status_changed").catch((error) => console.error("Chat member audit failed", error?.message || "unknown error")));
       } else if (update.my_chat_member) {
