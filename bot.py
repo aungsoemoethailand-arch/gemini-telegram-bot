@@ -410,7 +410,10 @@ def search_catalog(query: str, limit: int | None = 10) -> list[tuple[str, str, s
         if is_review_record(chat_id, author, title, link, raw_text):
             continue
         visible_row = (author, title, link, raw_text)
-        haystack = normalize_search_text(" ".join(visible_row))
+        # Only the catalog's explicit author/title fields are searchable.
+        # Matching raw review text or URLs made ordinary group conversation
+        # trigger a book reply whenever a common word appeared in a record.
+        haystack = normalize_search_text(" ".join((author, title)))
         if normalized_query in haystack or all(part in haystack for part in query_parts):
             matches.append(visible_row)
             if limit is not None and len(matches) >= limit:
