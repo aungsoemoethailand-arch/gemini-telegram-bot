@@ -297,8 +297,9 @@ async function telegram(env, method, body) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error(`Telegram ${method} HTTP ${response.status}`);
-  return response.json();
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) throw new Error(`Telegram ${method} HTTP ${response.status}: ${payload.description || "unknown error"}`);
+  return payload;
 }
 
 async function ensureWebhook(env) {
@@ -625,10 +626,11 @@ async function handleJoinRequest(env, request) {
   await rememberChat(env, chat);
   const message = { chat, from: user };
   try {
+    console.log("Join request received", chat.id, user.id, user.username || user.first_name || "unknown");
     await telegram(env, "approveChatJoinRequest", { chat_id: chat.id, user_id: user.id });
     await auditAction(env, message, "join_request_auto_approved", user.id, `${user.username || user.first_name || "unknown"}`);
   } catch (error) {
-    console.log("Join request handling failed", error?.message || "unknown error");
+    console.error("Join request handling failed", error?.message || "unknown error");
     await auditAction(env, message, "join_request_error", user.id, error?.message || "Telegram API error");
   }
 }
