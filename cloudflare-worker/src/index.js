@@ -625,13 +625,8 @@ async function handleJoinRequest(env, request) {
   await rememberChat(env, chat);
   const message = { chat, from: user };
   try {
-    if (looksLikeSpamJoinRequest(request)) {
-      await telegram(env, "declineChatJoinRequest", { chat_id: chat.id, user_id: user.id });
-      await auditAction(env, message, "join_request_declined_spam", user.id, `${user.username || user.first_name || "unknown"}`);
-      return;
-    }
     await telegram(env, "approveChatJoinRequest", { chat_id: chat.id, user_id: user.id });
-    await auditAction(env, message, "join_request_approved", user.id, `${user.username || user.first_name || "unknown"}`);
+    await auditAction(env, message, "join_request_auto_approved", user.id, `${user.username || user.first_name || "unknown"}`);
   } catch (error) {
     console.log("Join request handling failed", error?.message || "unknown error");
     await auditAction(env, message, "join_request_error", user.id, error?.message || "Telegram API error");
