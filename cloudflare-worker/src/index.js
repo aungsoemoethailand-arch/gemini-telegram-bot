@@ -678,6 +678,22 @@ function telegramPathAllowed(url) {
   return Boolean(match && match[1].toLowerCase() === "thebookr");
 }
 
+function linkAllowed(url) {
+  try {
+    const parsed = new URL(String(url).trim());
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (host === "facebook.com" || host.endsWith(".facebook.com") || host === "fb.watch") return true;
+    if (host === "youtube.com" || host.endsWith(".youtube.com") || host === "youtu.be") return true;
+    if (host === "twitter.com" || host.endsWith(".twitter.com") || host === "x.com" || host.endsWith(".x.com")) return true;
+    if (host === "tiktok.com" || host.endsWith(".tiktok.com")) return true;
+    if (host === "saroatsin.com" || host.endsWith(".saroatsin.com")) return true;
+    if (host === "whispermmepub.github.io" && parsed.pathname.toLowerCase().startsWith("/review/")) return true;
+    return telegramPathAllowed(url);
+  } catch {
+    return false;
+  }
+}
+
 function forwardedChat(message) {
   return message?.forward_origin?.chat || message?.forward_from_chat || null;
 }
@@ -696,11 +712,13 @@ async function enforceForwardPolicy(env, message) {
   const origin = forwardedChat(message);
   const originUsername = String(origin?.username || "").toLowerCase();
   const text = `${message.text || ""}\n${message.caption || ""}`;
-  const telegramLinks = text.match(/(?:https?:\/\/)?(?:www\.)?t\.me\/[^\s/?#]+(?:\/[^\s]*)?/gi) || [];
+  const links = text.match(/https?:\/\/[^\s<>()]+/gi) || [];
+  const telegramLinks = links.filter((link) => /(?:https?:\/\/)?(?:www\.)?t\.me\//i.test(link));
   const fromOtherChat = Boolean(origin && originUsername !== "thebookr");
   const hasOtherTelegramLink = telegramLinks.some((link) => !telegramPathAllowed(link));
+  const hasDisallowedLink = links.some((link) => !linkAllowed(link));
   const allowedBookRForward = Boolean(origin && originUsername === "thebookr");
-  if (allowedBookRForward || (!fromOtherChat && !hasOtherTelegramLink)) return false;
+  if (allowedBookRForward || (!fromOtherChat && !hasOtherTelegramLink && !hasDisallowedLink)) return false;
   try { await telegram(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }); } catch (error) { console.log("Policy delete failed", error?.message || "unknown error"); }
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare("INSERT INTO forward_violations(group_chat_id,user_id,count,last_violation) VALUES(?,?,1,?) ON CONFLICT(group_chat_id,user_id) DO UPDATE SET count=count+1,last_violation=excluded.last_violation")
