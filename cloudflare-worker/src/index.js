@@ -77,6 +77,10 @@ function isGroupMessage(message) {
   return ["group", "supergroup"].includes(message?.chat?.type);
 }
 
+function isGroupChat(chat) {
+  return ["group", "supergroup"].includes(chat?.type);
+}
+
 function autoDeleteEnabled(env) {
   return env.AUTO_DELETE_ENABLED !== "false" && env.AUTO_DELETE_ENABLED !== "0";
 }
@@ -593,6 +597,12 @@ async function serviceEvent(env, message) {
   else if (message.left_chat_member) { action = "member_left"; details = message.left_chat_member.username ? `@${message.left_chat_member.username}` : String(message.left_chat_member.id); }
   else if (message.pinned_message) { action = "message_pinned"; details = `message_id=${message.pinned_message.message_id}`; }
   else if (message.delete_chat_photo) { action = "chat_photo_deleted"; }
+  else if (message.new_chat_title) { action = "group_title_changed"; details = message.new_chat_title; }
+  else if (message.new_chat_photo) { action = "group_photo_changed"; }
+  else if (message.message_auto_delete_timer_changed) { action = "auto_delete_timer_changed"; details = `seconds=${message.message_auto_delete_timer_changed.message_auto_delete_time || 0}`; }
+  else if (message.group_chat_created || message.supergroup_chat_created) { action = "group_created"; }
+  else if (message.migrate_to_chat_id) { action = "group_migrated"; details = `to=${message.migrate_to_chat_id}`; }
+  else if (message.migrate_from_chat_id) { action = "group_migrated"; details = `from=${message.migrate_from_chat_id}`; }
   else return;
   await auditAction(env, { ...message, from: message.from || message.left_chat_member || null }, action, null, details);
   if (message.new_chat_members?.length) await sendMembershipGreetings(env, message, "welcome");
@@ -659,15 +669,6 @@ async function sendMembershipGreetings(env, message, kind) {
   }
 }
 
-function looksLikeSpamJoinRequest(request) {
-  const user = request.from || {};
-  const value = `${user.first_name || ""} ${user.last_name || ""} ${user.username || ""} ${request.bio || ""}`.toLowerCase();
-  if (/(https?:\/\/|t\.me\/|telegram\.me\/|casino|betting|พนัน|crypto|airdrop|giveaway|loan|เครดิตฟรี|porn|sex|xxx|onlyfans|วีไอพี)/i.test(value)) return true;
-  if ((value.match(/[0-9]/g) || []).length >= 7) return true;
-  if (/(.)\1{5,}/u.test(value.replace(/\s+/g, ""))) return true;
-  return false;
-}
-
 async function handleJoinRequest(env, request) {
   const chat = request.chat;
   const user = request.from;
@@ -686,11 +687,31 @@ async function handleJoinRequest(env, request) {
 
 async function membershipEvent(env, update, kind = "member_status_changed") {
   const event = update.chat_member || update.my_chat_member;
-  if (!event?.chat || !isGroupMessage(event.chat)) return;
+  if (!event?.chat || !isGroupChat(event.chat)) return;
   await rememberChat(env, event.chat);
   const oldStatus = event.old_chat_member?.status || "unknown";
   const newStatus = event.new_chat_member?.status || "unknown";
-  await auditAction(env, { chat: event.chat, from: event.from }, kind, event.new_chat_member?.user?.id || null, `${oldStatus} → ${newStatus}`);
+  const target = event.new_chat_member?.user;
+  const targetId = target?.id || null;
+  let action = kind;
+  let details = `${oldStatus} → ${newStatus}`;
+  if (kind === "bot_status_changed") {
+    action = ["left", "kicked"].includes(newStatus) ? "bot_removed" : "bot_status_changed";
+    details = `Bot status: ${oldStatus} → ${newStatus}`;
+  } else if (newStatus === "administrator") {
+    action = "admin_promoted";
+    details = `${target?.username ? `@${target.username}` : targetId} promoted to administrator`;
+  } else if (oldStatus === "administrator" && newStatus !== "administrator") {
+    action = "admin_demoted";
+    details = `${target?.username ? `@${target.username}` : targetId} demoted from administrator`;
+  } else if (newStatus === "restricted") {
+    action = "member_restricted";
+    details = `${target?.username ? `@${target.username}` : targetId} restricted`;
+  } else if (oldStatus === "restricted" && newStatus === "member") {
+    action = "member_unrestricted";
+    details = `${target?.username ? `@${target.username}` : targetId} unrestricted`;
+  }
+  await auditAction(env, { chat: event.chat, from: event.from }, action, targetId, details);
 }
 
 function isServiceMessage(message) {
