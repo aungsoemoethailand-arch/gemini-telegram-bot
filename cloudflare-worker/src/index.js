@@ -617,7 +617,7 @@ async function nextGreeting(env, chatId, kind, pool) {
 
 async function sendTemporaryMembershipMessage(env, chatId, text) {
   const sent = await sendMessage(env, chatId, text);
-  if (sent.result?.message_id) await deleteAfterDelay(env, chatId, sent.result.message_id, 30000);
+  if (sent.result?.message_id) await deleteAfterDelay(env, chatId, sent.result.message_id, 5000);
 }
 
 async function sendMembershipGreetings(env, message, kind) {
@@ -837,9 +837,26 @@ async function handleMessage(env, message) {
   if (text.startsWith("/")) return handleCommand(env, message);
   const isGroup = ["group", "supergroup"].includes(message.chat?.type);
   const replyTarget = message.reply_to_message;
-  if (isGroup && replyTarget?.from && !replyTarget.from.is_bot) return;
+  let botMentioned = false;
+  if (isGroup && message.entities?.some((entity) => entity.type === "mention")) {
+    try {
+      const botUsername = (await telegram(env, "getMe", {})).result?.username;
+      botMentioned = Boolean(botUsername && text.toLowerCase().includes(`@${String(botUsername).toLowerCase()}`));
+    } catch (error) {
+      console.log("Bot mention check failed", error?.message || "unknown error");
+    }
+  }
+  if (isGroup && replyTarget?.from && !replyTarget.from.is_bot && !botMentioned) return;
   const cleanup = isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {};
-  return sendSearch(env, message.chat.id, text, cleanup, isGroup);
+  if (isGroup && !botMentioned) {
+    // Do not fuzzy-search every ordinary group message. The original bot
+    // only searched an exact author/title in this fast path, and stayed
+    // silent when there was no exact catalog match.
+    const exactRows = await searchExactBook(env, text);
+    if (!exactRows.length) return null;
+    return sendSearch(env, message.chat.id, text, cleanup, true);
+  }
+  return sendSearch(env, message.chat.id, text, cleanup, false);
 }
 
 async function handleCallback(env, query) {
