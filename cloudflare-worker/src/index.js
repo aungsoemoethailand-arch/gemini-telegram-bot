@@ -306,7 +306,13 @@ function extractHashtagReview(text, fallbackLink = "") {
 
 function isReviewRecord(row) {
   const raw = String(row?.raw_text || "");
-  return String(row?.chat_id || "") === "-2000000001" || /#(?:bookreview|review|စာအုပ်အညွှန်း)/i.test(raw);
+  const author = String(row?.author || "");
+  const title = String(row?.title || "");
+  const link = String(row?.link || "");
+  const metadata = [author, title, link].filter(Boolean).join(" - ");
+  const hasReviewTag = /#(?:bookreview|review|စာအုပ်အညွှန်း)\b/i.test(raw);
+  const hasReviewBody = raw.length > metadata.length + 80;
+  return String(row?.chat_id || "") === "-2000000001" || hasReviewTag || hasReviewBody;
 }
 
 async function telegram(env, method, body) {
