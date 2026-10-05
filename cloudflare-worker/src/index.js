@@ -1,11 +1,35 @@
 const MAX_BOOK_RESULTS = 40;
 
+const SEARCH_INTROS = [
+  "စာအုပ်စာရင်းကို ရှာပေးထားပါတယ်ရှင်။",
+  "ရှာတွေ့တဲ့ စာအုပ်တွေကို စုစည်းပေးထားပါတယ်ရှင်။",
+  "ဒီနာမည်နဲ့ ကိုက်ညီတဲ့ စာအုပ်တွေကို တွေ့ပါပြီရှင်။",
+  "စာအုပ်လေးတွေကို ရှာပေးထားပါတယ်နော်။",
+  "ရလဒ်တွေ ရှာတွေ့ပါပြီရှင်။ အောက်မှာ ကြည့်လို့ရပါတယ်နော်။",
+];
+const lastSearchIntro = new Map();
+
+function nextSearchIntro(chatId) {
+  const previous = lastSearchIntro.get(String(chatId));
+  const choices = SEARCH_INTROS.map((_, index) => index).filter((index) => index !== previous);
+  const index = choices[Math.floor(Math.random() * choices.length)] ?? 0;
+  lastSearchIntro.set(String(chatId), index);
+  if (lastSearchIntro.size > 500) lastSearchIntro.delete(lastSearchIntro.keys().next().value);
+  return index;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function userMention(user) {
+  if (!user?.id) return "";
+  const name = user.username ? `@${user.username}` : ([user.first_name, user.last_name].filter(Boolean).join(" ") || "မိတ်ဆွေ");
+  return `<a href="tg://user?id=${user.id}">${escapeHtml(name)}</a>`;
 }
 
 function normalize(value) {
@@ -436,14 +460,16 @@ async function searchExactBook(env, query) {
   return (rows.results || []).filter((row) => !isReviewRecord(row) && (normalize(row.author) === needle || normalize(row.title) === needle)).slice(0, MAX_BOOK_RESULTS);
 }
 
-async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = false, token = "", editMessageId = null) {
+async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = false, token = "", editMessageId = null, mention = "", introIndex = null) {
   const rows = exact ? await searchExactBook(env, query) : await searchBooks(env, query);
-  if (!rows.length) return sendMessage(env, chatId, "ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါ။", cleanup);
+  if (!rows.length) return sendMessage(env, chatId, `${mention ? `${mention} ရေ၊ ` : ""}ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါဘူးရှင်။`, cleanup);
   const pageSize = 5;
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
   const safePage = Math.max(0, Math.min(Number(page) || 0, pageCount - 1));
   const visible = rows.slice(safePage * pageSize, (safePage + 1) * pageSize);
-  const lines = [`<b>📚 ရှာဖွေမှုရလဒ် (${rows.length} ခု)</b>`, `စာမျက်နှာ ${safePage + 1}/${pageCount}`];
+  const intro = SEARCH_INTROS[(Number.isInteger(introIndex) ? introIndex : 0) % SEARCH_INTROS.length];
+  const greeting = mention ? `${mention} ရေ၊ ` : "";
+  const lines = [`<b>${greeting}📚 ${escapeHtml(query)} စာအုပ် စုစုပေါင်း (${rows.length}) အုပ် ရှိပါတယ်ရှင်။</b>`, intro, `စာမျက်နှာ ${safePage + 1}/${pageCount}`];
   const buttons = [];
   visible.forEach((row, index) => {
     const number = safePage * pageSize + index + 1;
@@ -460,12 +486,14 @@ async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = fa
   return editMessageId ? editMessage(env, chatId, editMessageId, lines.join("\n"), payload) : sendMessage(env, chatId, lines.join("\n"), payload);
 }
 
-async function sendSearch(env, chatId, query, cleanup = {}, exact = false) {
+async function sendSearch(env, chatId, query, cleanup = {}, exact = false, speaker = null) {
   const token = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-  const storedQuery = `${exact ? "__exact__" : "__fuzzy__"}${query}`;
+  const mention = speaker?.chatType && speaker.chatType !== "private" ? userMention(speaker.user) : "";
+  const introIndex = nextSearchIntro(chatId);
+  const storedQuery = JSON.stringify({ query, exact, mention, introIndex });
   await env.DB.prepare("INSERT OR REPLACE INTO search_sessions(token,query,created_at) VALUES(?,?,?)")
     .bind(token, storedQuery, Math.floor(Date.now() / 1000)).run();
-  return sendSearchPage(env, chatId, query, 0, cleanup, exact, token);
+  return sendSearchPage(env, chatId, query, 0, cleanup, exact, token, null, mention, introIndex);
 }
 
 async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId = null) {
@@ -846,7 +874,7 @@ async function handleCommand(env, message) {
     return reply(`<b>🛡 Recent Admin History</b>\n${list || "မှတ်တမ်း မရှိသေးပါ။"}`);
   }
   if (command === "/search" || command === "/find") {
-    return query ? sendSearch(env, chatId, query, cleanup) : reply("သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
+    return query ? sendSearch(env, chatId, query, cleanup, false, { user: message.from, chatType: message.chat?.type }) : reply("သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
   }
   if (command === "/connects") {
     if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
@@ -924,9 +952,9 @@ async function handleMessage(env, message) {
     // silent when there was no exact catalog match.
     const exactRows = await searchExactBook(env, text);
     if (!exactRows.length) return null;
-    return sendSearch(env, message.chat.id, text, cleanup, true);
+    return sendSearch(env, message.chat.id, text, cleanup, true, { user: message.from, chatType: message.chat?.type });
   }
-  return sendSearch(env, message.chat.id, text, cleanup, false);
+  return sendSearch(env, message.chat.id, text, cleanup, false, { user: message.from, chatType: message.chat?.type });
 }
 
 async function handleCallback(env, query) {
@@ -944,9 +972,21 @@ async function handleCallback(env, query) {
     const session = await env.DB.prepare("SELECT query FROM search_sessions WHERE token=? AND created_at>? ").bind(searchMatch[1], Math.floor(Date.now() / 1000) - 86400).first();
     if (!session) return sendMessage(env, message.chat.id, "ဒီရှာဖွေမှု button သက်တမ်းကုန်သွားပါပြီ။ ပြန်ရှာပါ။");
     const stored = String(session.query || "");
-    const exact = stored.startsWith("__exact__");
-    const query = stored.replace(/^__(?:exact|fuzzy)__/, "");
-    return sendSearchPage(env, message.chat.id, query, Number(searchMatch[2]), {}, exact, searchMatch[1], message.message_id);
+    let query;
+    let exact;
+    let mention = "";
+    let introIndex = 0;
+    try {
+      const parsed = JSON.parse(stored);
+      query = String(parsed.query || "");
+      exact = Boolean(parsed.exact);
+      mention = String(parsed.mention || "");
+      introIndex = Number(parsed.introIndex) || 0;
+    } catch {
+      exact = stored.startsWith("__exact__");
+      query = stored.replace(/^__(?:exact|fuzzy)__/, "");
+    }
+    return sendSearchPage(env, message.chat.id, query, Number(searchMatch[2]), {}, exact, searchMatch[1], message.message_id, mention, introIndex);
   }
   const catalogMatch = String(action || "").match(/^catalog:(authors|books):(\d+)$/);
   if (catalogMatch) return catalogPage(env, message.chat.id, catalogMatch[1], Number(catalogMatch[2]), {}, message.message_id);
