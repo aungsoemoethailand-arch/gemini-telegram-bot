@@ -15,6 +15,9 @@ const SEARCH_INTROS = [
   "စာအုပ်ရှာပေးထားပါတယ်ရှင်၊ အောက်က ခလုတ်လေးတွေကနေ တိုက်ရိုက်ဖတ်လို့ရပါတယ်။",
 ];
 const lastSearchIntro = new Map();
+const chatWriteCache = new Map();
+const userWriteCache = new Map();
+let botIdentityCache = null;
 
 function nextSearchIntro(chatId) {
   const previous = lastSearchIntro.get(String(chatId));
@@ -135,6 +138,11 @@ function adminId(env) {
 
 async function rememberUser(env, user) {
   if (!user?.id) return;
+  const cacheKey = String(user.id);
+  const now = Date.now();
+  if (now - Number(userWriteCache.get(cacheKey) || 0) < 600000) return;
+  userWriteCache.set(cacheKey, now);
+  if (userWriteCache.size > 1000) userWriteCache.delete(userWriteCache.keys().next().value);
   await env.DB.prepare(
     `INSERT INTO known_users(user_id,username,first_name,updated_at) VALUES(?,?,?,datetime('now'))
      ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,first_name=excluded.first_name,updated_at=excluded.updated_at`
@@ -147,10 +155,22 @@ async function isAdmin(env, user) {
 
 async function rememberChat(env, chat) {
   if (!chat?.id || !["group", "supergroup", "channel"].includes(chat.type)) return;
+  const cacheKey = String(chat.id);
+  const now = Date.now();
+  if (now - Number(chatWriteCache.get(cacheKey) || 0) < 300000) return;
+  chatWriteCache.set(cacheKey, now);
+  if (chatWriteCache.size > 300) chatWriteCache.delete(chatWriteCache.keys().next().value);
   await env.DB.prepare(
     `INSERT INTO connected_chats(chat_id,chat_type,title,username,last_seen) VALUES(?,?,?,?,?)
      ON CONFLICT(chat_id) DO UPDATE SET chat_type=excluded.chat_type,title=excluded.title,username=excluded.username,last_seen=excluded.last_seen`
   ).bind(chat.id, chat.type, chat.title || "", chat.username || "", Math.floor(Date.now() / 1000)).run();
+}
+
+async function getBotIdentity(env) {
+  if (botIdentityCache && Date.now() - botIdentityCache.cachedAt < 900000) return botIdentityCache.value;
+  const value = (await telegram(env, "getMe", {})).result || {};
+  botIdentityCache = { value, cachedAt: Date.now() };
+  return value;
 }
 
 async function claimWebhookUpdate(env, updateId) {
@@ -485,8 +505,8 @@ async function searchExactBook(env, query) {
   return (rows.results || []).filter((row) => !isReviewRecord(row) && (normalize(row.author) === needle || normalize(row.title) === needle)).slice(0, MAX_BOOK_RESULTS);
 }
 
-async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = false, token = "", editMessageId = null, mention = "", introIndex = null) {
-  const rows = exact ? await searchExactBook(env, query) : await searchBooks(env, query);
+async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = false, token = "", editMessageId = null, mention = "", introIndex = null, prefetchedRows = null) {
+  const rows = prefetchedRows || (exact ? await searchExactBook(env, query) : await searchBooks(env, query));
   if (!rows.length) return sendMessage(env, chatId, `${mention ? `${mention} ရေ၊ ` : ""}ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါဘူးရှင်။`, cleanup);
   const pageSize = 5;
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
@@ -511,14 +531,14 @@ async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = fa
   return editMessageId ? editMessage(env, chatId, editMessageId, lines.join("\n"), payload) : sendMessage(env, chatId, lines.join("\n"), payload);
 }
 
-async function sendSearch(env, chatId, query, cleanup = {}, exact = false, speaker = null) {
+async function sendSearch(env, chatId, query, cleanup = {}, exact = false, speaker = null, prefetchedRows = null) {
   const token = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const mention = speaker?.chatType && speaker.chatType !== "private" ? userMention(speaker.user) : "";
   const introIndex = nextSearchIntro(chatId);
   const storedQuery = JSON.stringify({ query, exact, mention, introIndex });
   await env.DB.prepare("INSERT OR REPLACE INTO search_sessions(token,query,created_at) VALUES(?,?,?)")
     .bind(token, storedQuery, Math.floor(Date.now() / 1000)).run();
-  return sendSearchPage(env, chatId, query, 0, cleanup, exact, token, null, mention, introIndex);
+  return sendSearchPage(env, chatId, query, 0, cleanup, exact, token, null, mention, introIndex, prefetchedRows);
 }
 
 async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId = null) {
@@ -955,15 +975,14 @@ async function handleCommand(env, message) {
 async function handleMessage(env, message) {
   const text = String(message.text || "").trim();
   if (!text) return;
-  await rememberChat(env, message.chat);
-  await rememberUser(env, message.from);
+  await Promise.all([rememberChat(env, message.chat), rememberUser(env, message.from)]);
   if (text.startsWith("/")) return handleCommand(env, message);
   const isGroup = ["group", "supergroup"].includes(message.chat?.type);
   const replyTarget = message.reply_to_message;
   let botMentioned = false;
   if (isGroup && message.entities?.some((entity) => entity.type === "mention")) {
     try {
-      const botUsername = (await telegram(env, "getMe", {})).result?.username;
+      const botUsername = (await getBotIdentity(env)).username;
       botMentioned = Boolean(botUsername && text.toLowerCase().includes(`@${String(botUsername).toLowerCase()}`));
     } catch (error) {
       console.log("Bot mention check failed", error?.message || "unknown error");
@@ -977,7 +996,7 @@ async function handleMessage(env, message) {
     // silent when there was no exact catalog match.
     const exactRows = await searchExactBook(env, text);
     if (!exactRows.length) return null;
-    return sendSearch(env, message.chat.id, text, cleanup, true, { user: message.from, chatType: message.chat?.type });
+    return sendSearch(env, message.chat.id, text, cleanup, true, { user: message.from, chatType: message.chat?.type }, exactRows);
   }
   return sendSearch(env, message.chat.id, text, cleanup, false, { user: message.from, chatType: message.chat?.type });
 }
