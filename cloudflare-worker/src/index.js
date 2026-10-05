@@ -628,6 +628,88 @@ async function auditAction(env, message, action, targetId = null, details = "") 
   try { await sendMessage(env, config.log_chat_id, text); } catch (error) { console.log("Audit log delivery failed", error?.message || "unknown error"); }
 }
 
+async function groupRules(env, chatId) {
+  const row = await env.DB.prepare("SELECT rules FROM guardian_settings WHERE group_chat_id=?").bind(chatId).first();
+  return String(row?.rules || "").trim();
+}
+
+async function setGroupRules(env, chatId, rules) {
+  await env.DB.prepare(
+    "INSERT INTO guardian_settings(group_chat_id,rules,updated_at) VALUES(?,?,?) ON CONFLICT(group_chat_id) DO UPDATE SET rules=excluded.rules,updated_at=excluded.updated_at"
+  ).bind(chatId, rules, Math.floor(Date.now() / 1000)).run();
+}
+
+async function handleGuardianCommand(env, message, command, args, reply) {
+  if (!isGroupMessage(message)) return false;
+  if (command === "/rules") {
+    const rules = await groupRules(env, message.chat.id);
+    return Boolean(await reply(rules ? `<b>📜 ${escapeHtml(message.chat.title || "Group")} စည်းကမ်းများ</b>\n\n${escapeHtml(rules)}` : "📜 ဒီ group မှာ စည်းကမ်းစာ မသတ်မှတ်ရသေးပါဘူးရှင်။"));
+  }
+  if (["/setrules", "/clearrules"].includes(command)) {
+    if (!(await isAuthorizedGroupAdmin(env, message))) { await reply("ဒီ command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။"); return true; }
+    if (command === "/clearrules") {
+      await setGroupRules(env, message.chat.id, "");
+      await auditAction(env, message, "rules_cleared");
+      await reply("✅ Group rules ကို ဖျက်ပြီးပါပြီရှင်။");
+      return true;
+    }
+    const rules = args.join(" ").trim() || String(message.reply_to_message?.text || message.reply_to_message?.caption || "").trim();
+    if (!rules) { await reply("သုံးပုံ: /setrules စည်းကမ်းစာသား\nသို့မဟုတ် စည်းကမ်းစာကို reply လုပ်ပြီး /setrules ရိုက်ပါ။"); return true; }
+    await setGroupRules(env, message.chat.id, rules.slice(0, 3500));
+    await auditAction(env, message, "rules_updated", null, rules.slice(0, 500));
+    await reply("✅ Group rules ကို သိမ်းပြီးပါပြီရှင်။ /rules နဲ့ ပြန်ကြည့်နိုင်ပါတယ်။");
+    return true;
+  }
+  if (command === "/report") {
+    const target = message.reply_to_message;
+    if (!target?.from?.id) { await reply("Report လုပ်ချင်တဲ့ message ကို reply လုပ်ပြီး /report [အကြောင်းရင်း] ရိုက်ပါရှင်။"); return true; }
+    if (target.from.id === message.from?.id) { await reply("ကိုယ့် message ကို ကိုယ်တိုင် report လုပ်စရာ မလိုပါဘူးရှင်။"); return true; }
+    const reason = args.join(" ").trim() || "အကြောင်းရင်း မဖော်ပြထားပါ";
+    const targetName = target.from.username ? `@${target.from.username}` : (target.from.first_name || String(target.from.id));
+    await auditAction(env, message, "user_report", target.from.id, `Reported: ${targetName}; Reason: ${reason}; Message: ${target.message_id}`);
+    await reply("✅ Report ကို group admin log ထဲ ပို့ပြီးပါပြီရှင်။");
+    return true;
+  }
+  if (command === "/purge") {
+    if (!(await isAuthorizedGroupAdmin(env, message))) { await reply("ဒီ command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။"); return true; }
+    const first = message.reply_to_message;
+    if (!first?.message_id) { await reply("ဖျက်ချင်တဲ့ ပထမ message ကို reply လုပ်ပြီး /purge ရိုက်ပါရှင်။"); return true; }
+    const start = Number(first.message_id);
+    const end = Number(message.message_id);
+    if (end < start || end - start > 100) { await reply("တစ်ကြိမ်မှာ message 100 ခုအထိပဲ purge လုပ်နိုင်ပါတယ်ရှင်။"); return true; }
+    let deleted = 0;
+    for (let id = start; id <= end; id += 1) {
+      try { await telegram(env, "deleteMessage", { chat_id: message.chat.id, message_id: id }); deleted += 1; } catch {}
+    }
+    await auditAction(env, message, "purge", null, `${deleted} messages deleted`);
+    return true;
+  }
+  if (command === "/poll") {
+    if (!(await isAuthorizedGroupAdmin(env, message))) { await reply("ဒီ command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။"); return true; }
+    const text = args.join(" ").trim();
+    let question = "📚 ဒီတစ်ပတ် ဘာဖတ်ကြမလဲရှင်";
+    let options = ["မြန်မာစာအုပ်", "အင်္ဂလိပ်စာအုပ်", "ဘာသာပြန်", "ကဗျာ", "သုတ/ရသ"];
+    if (text.includes("|")) {
+      const parts = text.split("|").map((part) => part.trim()).filter(Boolean);
+      question = parts.shift() || question;
+      options = parts;
+    } else if (text) {
+      question = text;
+      options = ["ဟုတ်ပါတယ်", "မဟုတ်ပါဘူး"];
+    }
+    if (question.length > 300 || options.length < 2 || options.length > 10 || options.some((option) => option.length > 100)) {
+      await reply("Poll မေးခွန်းက စာလုံး 300 အတွင်း၊ ရွေးချယ်စရာ 2 ခုမှ 10 ခုအတွင်း ဖြစ်ရပါမယ်ရှင်။\nဥပမာ: /poll ဘာဖတ်ကြမလဲ | ဝတ္ထု | ကဗျာ");
+      return true;
+    }
+    try {
+      await telegram(env, "sendPoll", { chat_id: message.chat.id, question, options, is_anonymous: false, allows_multiple_answers: true });
+      await auditAction(env, message, "poll_created", null, question.slice(0, 300));
+    } catch (error) { await reply(`❌ Poll မလုပ်နိုင်ပါဘူးရှင်။ ${escapeHtml(error?.message || "Telegram API error")}`); }
+    return true;
+  }
+  return false;
+}
+
 function parseMuteSeconds(value) {
   const match = String(value || "1h").match(/^(\d+)(m|h|d)?$/i);
   if (!match) return 3600;
@@ -871,6 +953,7 @@ async function handleCommand(env, message) {
   const chatId = message.chat.id;
   const cleanup = isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {};
   const reply = (text, extra = {}) => sendMessage(env, chatId, text, { ...cleanup, ...extra });
+  if (await handleGuardianCommand(env, message, command, args, reply)) return null;
   if (command === "/start" || command === "/help") {
     return reply("<b>📚 စာအုပ်ရှာဖွေရေး Bot</b>\n\nအောက်က menu ကနေ ရွေးနိုင်ပါတယ်ရှင်။", { reply_markup: { inline_keyboard: [
       [{ text: "🔎 စာအုပ်ရှာမယ်", callback_data: "help_search" }, { text: "✍️ စာရေးသူများ", callback_data: "help_authors" }],
