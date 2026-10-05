@@ -141,6 +141,19 @@ async function rememberChat(env, chat) {
   ).bind(chat.id, chat.type, chat.title || "", chat.username || "", Math.floor(Date.now() / 1000)).run();
 }
 
+async function claimWebhookUpdate(env, updateId) {
+  if (updateId === undefined || updateId === null) return true;
+  const result = await env.DB.prepare(
+    "INSERT OR IGNORE INTO webhook_updates(update_id,received_at) VALUES(?,?)"
+  ).bind(Number(updateId), Math.floor(Date.now() / 1000)).run();
+  return Number(result?.meta?.changes || 0) === 1;
+}
+
+async function pruneWebhookUpdates(env) {
+  await env.DB.prepare("DELETE FROM webhook_updates WHERE received_at < ?")
+    .bind(Math.floor(Date.now() / 1000) - 172800).run();
+}
+
 async function connectedGroups(env) {
   const rows = await env.DB.prepare("SELECT chat_id,chat_type,title,username FROM connected_chats WHERE chat_type IN ('group','supergroup') ORDER BY title").all();
   let botId = null;
@@ -994,7 +1007,7 @@ async function handleCallback(env, query) {
 
 export default {
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(Promise.all([ensureWebhook(env), cleanupDue(env), sendMorningGreetings(env)]));
+    ctx.waitUntil(Promise.all([ensureWebhook(env), cleanupDue(env), sendMorningGreetings(env), pruneWebhookUpdates(env)]));
   },
 
   async fetch(request, env, ctx) {
@@ -1005,6 +1018,7 @@ export default {
       if (request.method === "GET") return new Response("gemini-telegram-webhook is running");
       if (env.TELEGRAM_SECRET_TOKEN && request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.TELEGRAM_SECRET_TOKEN) return new Response("Unauthorized", { status: 401 });
       const update = await request.json();
+      if (!(await claimWebhookUpdate(env, update.update_id))) return new Response("OK");
       if (update.channel_post) {
         ctx.waitUntil(rememberChat(env, update.channel_post.chat));
         ctx.waitUntil(importChannelPost(env, update.channel_post).catch((error) => console.error("Channel import failed", error?.message || "unknown error")));
