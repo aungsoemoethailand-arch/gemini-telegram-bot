@@ -720,8 +720,10 @@ function parseMuteSeconds(value) {
 async function moderateMember(env, message, command, args) {
   if (!isGroupMessage(message)) { await sendMessage(env, message.chat.id, "ဒီ command ကို group ထဲမှာပဲ သုံးနိုင်ပါတယ်။"); return true; }
   if (!(await isAuthorizedGroupAdmin(env, message))) { await sendMessage(env, message.chat.id, "ဒီ moderation command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။"); return true; }
-  const target = await resolveUserId(env, args[0]);
-  if (!target) { await sendMessage(env, message.chat.id, `သုံးပုံ: /${command} <Telegram ID သို့မဟုတ် @username>`); return true; }
+  const repliedUser = message.reply_to_message?.from;
+  const target = repliedUser?.id ? String(repliedUser.id) : await resolveUserId(env, args[0]);
+  if (!target) { await sendMessage(env, message.chat.id, `သုံးပုံ: /${command} <Telegram ID သို့မဟုတ် @username>\nသို့မဟုတ် target user ရဲ့ message ကို reply လုပ်ပြီး /${command} ရိုက်ပါ။`); return true; }
+  const durationArg = repliedUser ? args[0] : args[1];
   try {
     if (command === "ban") {
       await telegram(env, "banChatMember", { chat_id: message.chat.id, user_id: target, revoke_messages: true });
@@ -731,13 +733,14 @@ async function moderateMember(env, message, command, args) {
       await telegram(env, "banChatMember", { chat_id: message.chat.id, user_id: target, revoke_messages: true });
       await telegram(env, "unbanChatMember", { chat_id: message.chat.id, user_id: target, only_if_banned: true });
     } else if (command === "mute") {
-      const seconds = parseMuteSeconds(args[1] || "1h");
+      const seconds = parseMuteSeconds(durationArg || "1h");
       await telegram(env, "restrictChatMember", { chat_id: message.chat.id, user_id: target, until_date: Math.floor(Date.now() / 1000) + seconds, use_independent_chat_permissions: true, permissions: { can_send_messages: false, can_send_audios: false, can_send_documents: false, can_send_photos: false, can_send_videos: false, can_send_video_notes: false, can_send_voice_notes: false, can_send_polls: false, can_send_other_messages: false, can_add_web_page_previews: false, can_change_info: false, can_invite_users: false, can_pin_messages: false } });
     } else if (command === "unmute") {
       await telegram(env, "restrictChatMember", { chat_id: message.chat.id, user_id: target, use_independent_chat_permissions: true, permissions: { can_send_messages: true, can_send_audios: true, can_send_documents: true, can_send_photos: true, can_send_videos: true, can_send_video_notes: true, can_send_voice_notes: true, can_send_polls: true, can_send_other_messages: true, can_add_web_page_previews: true, can_invite_users: true, can_pin_messages: true } });
     } else return false;
-    await auditAction(env, message, command, target, args.slice(1).join(" "));
-    await sendMessage(env, message.chat.id, `✅ <b>${escapeHtml(command)}</b> လုပ်ပြီးပါပြီ။\nUser: <code>${escapeHtml(target)}</code>`);
+    const targetLabel = repliedUser ? userMention(repliedUser) : `<code>${escapeHtml(target)}</code>`;
+    await auditAction(env, message, command, target, durationArg || "");
+    await sendMessage(env, message.chat.id, `✅ <b>${escapeHtml(command)}</b> လုပ်ပြီးပါပြီရှင်။\nUser: ${targetLabel}`);
   } catch (error) {
     await sendMessage(env, message.chat.id, `❌ လုပ်မရပါ။ Bot ကို group ထဲမှာ admin ထားပြီး ban/restrict permission ပေးထားရပါမယ်။\n${escapeHtml(error?.message || "Telegram API error")}`);
   }
