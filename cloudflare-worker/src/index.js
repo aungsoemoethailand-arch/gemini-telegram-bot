@@ -976,6 +976,11 @@ async function handleCommand(env, message) {
     const list = (rows.results || []).map((row, index) => `${index + 1}. <code>${row.user_id}</code>${row.username ? ` @${escapeHtml(row.username)}` : ""}`).join("\n");
     return reply(`<b>Bot Admin များ</b>\nOwner: <code>${escapeHtml(adminId(env))}</code>${list ? `\n${list}` : "\nထပ်ထည့်ထားတဲ့ admin မရှိသေးပါ။"}`);
   }
+  if (["/usercount", "/users"].includes(command)) {
+    if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
+    const row = await env.DB.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN username <> '' THEN 1 ELSE 0 END) AS with_username, MAX(updated_at) AS last_active FROM known_users").first();
+    return reply(`<b>👥 Bot အသုံးပြုသူစာရင်း</b>\n\nစုစုပေါင်း message ပို့ဖူးသူ: <b>${Number(row?.total || 0)}</b> ယောက်\nUsername ရှိသူ: <b>${Number(row?.with_username || 0)}</b> ယောက်\nနောက်ဆုံး activity: <code>${escapeHtml(row?.last_active || "မရှိသေးပါ")}</code>\n\n<i>ဒီအရေအတွက်က bot ကို message ပို့ဖူးသူတွေကိုပဲ တွက်ထားတာပါ။ Group member အားလုံးကို မတွက်ထားပါ။</i>`);
+  }
   if (["ban", "unban", "kick", "remove", "mute", "unmute"].includes(command)) {
     if (await moderateMember(env, message, command.slice(1), args)) return null;
   }
