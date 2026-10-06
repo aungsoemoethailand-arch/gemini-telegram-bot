@@ -1413,7 +1413,7 @@ async function handleCallback(env, query) {
       exact = stored.startsWith("__exact__");
       query = stored.replace(/^__(?:exact|fuzzy)__/, "");
     }
-    if (ownerId && String(callbackUser?.id || "") !== ownerId) {
+    if (message.chat?.type !== "private" && ownerId && String(callbackUser?.id || "") !== ownerId) {
       const clicker = userMention(callbackUser) || "မိတ်ဆွေ";
       return sendMessage(env, message.chat.id, `${clicker} ရေ၊ ${nextPaginationOwnerNotice(message.chat.id)}`, { __deleteAfterSeconds: 5 });
     }
