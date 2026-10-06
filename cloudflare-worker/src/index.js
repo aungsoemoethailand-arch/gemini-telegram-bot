@@ -718,7 +718,7 @@ async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = fa
     const name = `<b>${escapeHtml(query)}</b>`;
     return sendMessage(env, chatId, `${mention ? `${mention} ရေ၊ ` : ""}${name} — ${nextNoResult(chatId)}`, cleanup);
   }
-  const pageSize = 5;
+  const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
   const safePage = Math.max(0, Math.min(Number(page) || 0, pageCount - 1));
   const visible = rows.slice(safePage * pageSize, (safePage + 1) * pageSize);
