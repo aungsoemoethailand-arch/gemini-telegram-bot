@@ -957,14 +957,8 @@ async function isAuthorizedGroupAdmin(env, message) {
 }
 
 async function auditAction(env, message, action, targetId = null, details = "") {
-  const groupId = message.chat.id;
-  await env.DB.prepare("INSERT INTO action_logs(group_chat_id,actor_id,action,target_id,details,created_at) VALUES(?,?,?,?,?,?)")
-    .bind(groupId, message.from?.id || null, action, targetId, details, Math.floor(Date.now() / 1000)).run();
-  const config = await env.DB.prepare("SELECT log_chat_id FROM log_configs WHERE group_chat_id=?").bind(groupId).first();
-  if (!config?.log_chat_id) return;
-  const actor = message.from?.username ? `@${message.from.username}` : String(message.from?.id || "unknown");
-  const text = `<b>🛡 Group Audit</b>\nGroup: <b>${escapeHtml(message.chat.title || String(groupId))}</b>\nAction: <b>${escapeHtml(action)}</b>\nActor: <code>${escapeHtml(actor)}</code>${targetId ? `\nTarget: <code>${escapeHtml(targetId)}</code>` : ""}${details ? `\n${escapeHtml(details)}` : ""}`;
-  try { await sendMessage(env, config.log_chat_id, text); } catch (error) { console.log("Audit log delivery failed", error?.message || "unknown error"); }
+  // Audit logging and log-channel delivery are intentionally disabled to minimize free-tier usage.
+  return null;
 }
 
 async function groupRules(env, chatId) {
@@ -1303,31 +1297,6 @@ async function handleCommand(env, message) {
   }
   if (["ban", "unban", "kick", "remove", "mute", "unmute"].includes(command)) {
     if (await moderateMember(env, message, command.slice(1), args)) return null;
-  }
-  if (command === "/setlog") {
-    if (!(await isAuthorizedGroupAdmin(env, message))) return reply("ဒီ command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။");
-    const logTarget = args[0];
-    if (!logTarget) return reply("သုံးပုံ: /setlog <log channel @username သို့မဟုတ် ID>");
-    try {
-      const normalizedTarget = normalizeChatTarget(logTarget);
-      const logChat = (await telegram(env, "getChat", { chat_id: normalizedTarget })).result;
-      await env.DB.prepare("INSERT OR REPLACE INTO log_configs(group_chat_id,log_chat_id,configured_by,created_at) VALUES(?,?,?,?)").bind(message.chat.id, logChat.id, message.from.id, Math.floor(Date.now() / 1000)).run();
-      await auditAction(env, message, "log_channel_connected", null, `log_chat_id=${logChat.id}`);
-      return reply(`✅ Log channel ချိတ်ပြီးပါပြီ။\n${escapeHtml(logChat.title || logChat.username || String(logChat.id))}`);
-    } catch (error) {
-      return reply(`❌ Log channel မချိတ်နိုင်ပါ။\n• Public channel ဆိုရင် Bot ကို admin ထည့်ပြီး Post Messages permission ပေးပါ။\n• Private channel ဆိုရင် numeric channel ID (-100...) သုံးပါ။\n• သင်ထည့်ထားတဲ့ URL ကိုလည်း လက်ခံနိုင်ပါပြီ။\n${escapeHtml(error?.message || "Telegram API error")}`);
-    }
-  }
-  if (command === "/unsetlog") {
-    if (!(await isAuthorizedGroupAdmin(env, message))) return reply("ဒီ command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။");
-    await env.DB.prepare("DELETE FROM log_configs WHERE group_chat_id=?").bind(message.chat.id).run();
-    return reply("✅ Log channel ချိတ်ဆက်မှု ဖြုတ်ပြီးပါပြီ။");
-  }
-  if (command === "/history") {
-    if (!(await isAuthorizedGroupAdmin(env, message))) return reply("ဒီ command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။");
-    const rows = await env.DB.prepare("SELECT action,target_id,details,created_at FROM action_logs WHERE group_chat_id=? ORDER BY id DESC LIMIT 30").bind(message.chat.id).all();
-    const list = (rows.results || []).map((row, index) => `${index + 1}. <b>${escapeHtml(row.action)}</b>${row.target_id ? ` — <code>${escapeHtml(row.target_id)}</code>` : ""}${row.details ? `\n${escapeHtml(row.details)}` : ""}`).join("\n\n");
-    return reply(`<b>🛡 Recent Admin History</b>\n${list || "မှတ်တမ်း မရှိသေးပါ။"}`);
   }
   if (command === "/search" || command === "/find") {
     return query ? sendSearch(env, chatId, query, cleanup, false, { user: message.from, chatType: message.chat?.type }) : reply("သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
