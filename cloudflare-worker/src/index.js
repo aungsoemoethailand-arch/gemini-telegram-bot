@@ -1233,7 +1233,7 @@ async function handleMessage(env, message) {
   const natural = extractNaturalSearchQuery(text);
   if (natural) {
     const naturalRows = await searchBooks(env, natural.query);
-    if (naturalRows.length) return sendSearch(env, message.chat.id, natural.query, cleanup, false, { user: message.from, chatType: message.chat?.type }, naturalRows);
+    if (naturalRows.length) return sendSearch(env, message.chat.id, natural.query, cleanup, false, { user: message.from, chatType: message.chat?.type }, naturalRows, natural.requestedFormat);
     if (shouldUseSmartSearch(text, isGroup, botMentioned, replyTarget)) {
       const interpreted = await interpretCatalogQuery(env, text);
       if (interpreted?.confidence >= 0.55 && interpreted.intent === "books") {
