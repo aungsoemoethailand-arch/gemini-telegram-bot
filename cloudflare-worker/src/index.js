@@ -55,13 +55,14 @@ function extractNaturalSearchQuery(text) {
   const original = String(text || "").trim();
   if (!original || original.startsWith("/")) return null;
   const compact = normalize(original);
-  const looksLikeBookQuestion = /စာအုပ်|စာရင်း|ရှိလား|ရှိသလား|ရှိပါသလား|ရှိမလား|ရှာပေး|ရှာပါ|ရှာချင်|လိုချင်|ဘယ်နှအုပ်|ဘယ်စာအုပ်/.test(compact);
+  const looksLikeBookQuestion = /စာအုပ်|စာရင်း|ရှိလား|ရှိလဲ|ရှိသလား|ရှိပါသလား|ရှိမလား|ရှာပေး|ရှာပါ|ရှာချင်|လိုချင်|ဘယ်နှအုပ်|ဘယ်လောက်|အရေအတွက်|ဘယ်စာအုပ်|ရှိသလောက်|ပြပေး/.test(compact);
   if (!looksLikeBookQuestion) return null;
   let query = original
     .replace(/(?:စာအုပ်နာမည်|စာအုပ်အမည်|စာအုပ်တွေ|စာအုပ်များ|စာအုပ်|စာရင်း)/gu, " ")
-    .replace(/(?:ရှိလား|ရှိသလား|ရှိပါသလား|ရှိမလား|ရှိသေးလား|ရှိတယ်လား|မရှိဘူးလား|ပါသလား|လား|နော်|ပါရှင်)/gu, " ")
-    .replace(/(?:ရှာပေးပါ|ရှာပေး|ရှာပါ|ရှာချင်တယ်|ရှာချင်|ရှာပေးစေချင်|လိုချင်တယ်|လိုချင်|ပေးပါ)/gu, " ")
-    .replace(/(?:ဘယ်နှအုပ်|ဘယ်နှစ်အုပ်|ဘယ်စာအုပ်|ဘယ်ဟာ)/gu, " ")
+    .replace(/(?:ရှိလား|ရှိလဲ|ရှိသလား|ရှိပါသလား|ရှိမလား|ရှိသေးလား|ရှိတယ်လား|မရှိဘူးလား|ရှိသလောက်|ပါသလား|လား|နော်|ပါရှင်)/gu, " ")
+    .replace(/(?:ရှာပေးပါ|ရှာပေး|ရှာပါ|ရှာချင်တယ်|ရှာချင်|ရှာပေးစေချင်|လိုချင်တယ်|လိုချင်|ပေးပါ|ပြပေးပါ|ပြပေး|ဖြေပေးပါ)/gu, " ")
+    .replace(/(?:ဘယ်နှအုပ်|ဘယ်နှစ်အုပ်|ဘယ်လောက်|အရေအတွက်|ဘယ်စာအုပ်|ဘယ်ဟာ)/gu, " ")
+    .replace(/(?:review|စာအုပ်အညွှန်း|သုံးသပ်ချက်|အညွှန်း)/giu, " ")
     .replace(/(?:ရဲ့|၏|သည်|ကော|ကို|အကြောင်း)/gu, " ")
     .replace(/[၊။!?၊,:;()\[\]{}"'`]+/gu, " ")
     .replace(/\s+/g, " ")
@@ -515,7 +516,14 @@ async function searchBooks(env, query) {
     "SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000"
   ).all();
   const needle = normalize(query);
-  return (rows.results || []).filter((row) => !isReviewRecord(row) && (normalize(row.author).includes(needle) || normalize(row.title).includes(needle))).slice(0, MAX_BOOK_RESULTS);
+  const parts = String(query || "").split(/\s+/).map(normalize).filter(Boolean);
+  return (rows.results || []).filter((row) => {
+    if (isReviewRecord(row)) return false;
+    const author = normalize(row.author);
+    const title = normalize(row.title);
+    const combined = `${author}${title}`;
+    return author.includes(needle) || title.includes(needle) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
+  }).slice(0, MAX_BOOK_RESULTS);
 }
 
 async function searchExactBook(env, query) {
@@ -533,7 +541,13 @@ async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = fa
   const visible = rows.slice(safePage * pageSize, (safePage + 1) * pageSize);
   const intro = SEARCH_INTROS[(Number.isInteger(introIndex) ? introIndex : 0) % SEARCH_INTROS.length];
   const greeting = mention ? `${mention} ရေ၊ ` : "";
-  const lines = [`<b>${greeting}📚 ${escapeHtml(query)} စာအုပ် စုစုပေါင်း (${rows.length}) အုပ် ရှိပါတယ်ရှင်။</b>`, intro, `စာမျက်နှာ ${safePage + 1}/${pageCount}`];
+  const queryNorm = normalize(query);
+  const authorOnly = rows.length > 0 && rows.every((row) => normalize(row.author) === queryNorm);
+  const headline = authorOnly
+    ? `📚 ${escapeHtml(query)} ရဲ့ စာအုပ် စုစုပေါင်း (${rows.length}) အုပ် ရှိပါတယ်ရှင်။`
+    : `📚 ${escapeHtml(query)} နဲ့ ကိုက်ညီတဲ့ စာအုပ် (${rows.length}) အုပ် တွေ့ပါတယ်ရှင်။`;
+  const followUp = authorOnly ? "ဘယ်စာအုပ်လေး လိုချင်လဲ ပြောပါနော်။ အောက်က စာရင်းထဲက ရွေးလို့ရပါတယ်ရှင်။" : intro;
+  const lines = [`<b>${greeting}${headline}</b>`, followUp, `စာမျက်နှာ ${safePage + 1}/${pageCount}`];
   const buttons = [];
   visible.forEach((row, index) => {
     const number = safePage * pageSize + index + 1;
@@ -1046,9 +1060,11 @@ async function handleCommand(env, message) {
   }
   if (command === "/ask") {
     if (!query) return reply("သုံးပုံ: /ask စာအုပ်နာမည်");
-    const local = await localReviewMatches(env, query);
-    const reviews = local.length ? local : await reviewMatches(query);
-    return sendReviews(env, chatId, query, reviews, cleanup);
+    const interpreted = extractNaturalSearchQuery(query);
+    const reviewQuery = interpreted?.query || query;
+    const local = await localReviewMatches(env, reviewQuery);
+    const reviews = local.length ? local : await reviewMatches(reviewQuery);
+    return sendReviews(env, chatId, reviewQuery, reviews, cleanup);
   }
   if (command === "/author") return handleCommand(env, { ...message, text: "/authors" });
   if (command === "/myid") {
