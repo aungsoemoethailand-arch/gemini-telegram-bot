@@ -15,6 +15,8 @@ const SEARCH_INTROS = [
   "စာအုပ်ရှာပေးထားပါတယ်ရှင်၊ အောက်က ခလုတ်လေးတွေကနေ တိုက်ရိုက်ဖတ်လို့ရပါတယ်။",
 ];
 const lastSearchIntro = new Map();
+const lastNoResult = new Map();
+const lastPdfNote = new Map();
 const chatWriteCache = new Map();
 const userWriteCache = new Map();
 let botIdentityCache = null;
@@ -51,6 +53,24 @@ function nextNoResult(chatId) {
   lastNoResult.set(key, index);
   if (lastNoResult.size > 500) lastNoResult.delete(lastNoResult.keys().next().value);
   return NO_RESULT_RESPONSES[index];
+}
+
+const PDF_NOTES = [
+  "PDF ဖိုင်တော့ မလုပ်ပေးထားဘူးရှင်။ ဒီစာအုပ်အတွက် EPUB ဖိုင်ပဲ ရှိပါတယ်နော်။ အောက်ကခလုတ်လေးကနေ ဖွင့်ကြည့်လို့ရပါတယ်ရှင်။",
+  "ဒီစာအုပ်ကို PDF အနေနဲ့ မတင်ထားပါဘူးရှင်။ EPUB ဖိုင်ရှိလို့ အောက်က link လေးကနေ ရယူဖတ်ရှုနိုင်ပါတယ်နော်။",
+  "PDF မဟုတ်ဘဲ EPUB format နဲ့ပဲ စီစဉ်ပေးထားပါတယ်ရှင်။ စာအုပ်ကို အောက်ကခလုတ်ကနေ ဖွင့်ကြည့်လို့ရပါတယ်နော်။",
+  "မေးထားတဲ့စာအုပ် ရှိပါတယ်ရှင်။ PDF မလုပ်ထားဘဲ EPUB ဖိုင်ပဲ ပြင်ဆင်ထားတာပါနော်။",
+  "ဒီစာအုပ်အတွက် ရှိထားတဲ့ဖိုင်က EPUB ဖိုင်ပါရှင်။ PDF version မရှိသေးပါဘူးနော်။ အောက်မှာ link ထည့်ပေးထားပါတယ်။",
+];
+
+function nextPdfNote(chatId) {
+  const key = String(chatId);
+  const previous = lastPdfNote.get(key);
+  const choices = PDF_NOTES.map((_, index) => index).filter((index) => index !== previous);
+  const index = choices[Math.floor(Math.random() * choices.length)] ?? 0;
+  lastPdfNote.set(key, index);
+  if (lastPdfNote.size > 500) lastPdfNote.delete(lastPdfNote.keys().next().value);
+  return PDF_NOTES[index];
 }
 
 function escapeHtml(value) {
@@ -95,7 +115,7 @@ function extractNaturalSearchQuery(text) {
     .replace(/\s+/g, " ")
     .trim();
   if (!query || query.length < 2) return null;
-  return { query, compact: normalize(query) };
+  return { query, compact: normalize(query), requestedFormat: /(?:pdf|ပီဒီအက်ဖ်)/iu.test(original) ? "pdf" : "" };
 }
 
 const REVIEW_SITE_BASE = "https://whispermmepub.github.io/Review/";
@@ -616,7 +636,7 @@ async function interpretCatalogQuery(env, text) {
   }
 }
 
-async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = false, token = "", editMessageId = null, mention = "", introIndex = null, prefetchedRows = null) {
+async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = false, token = "", editMessageId = null, mention = "", introIndex = null, prefetchedRows = null, formatRequest = "") {
   const rows = prefetchedRows || (exact ? await searchExactBook(env, query) : await searchBooks(env, query));
   if (!rows.length) {
     const name = `<b>${escapeHtml(query)}</b>`;
@@ -634,7 +654,9 @@ async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = fa
     ? `📚 ${escapeHtml(query)} ရဲ့ စာအုပ် စုစုပေါင်း (${rows.length}) အုပ် ရှိပါတယ်ရှင်။`
     : `📚 ${escapeHtml(query)} နဲ့ ကိုက်ညီတဲ့ စာအုပ် (${rows.length}) အုပ် တွေ့ပါတယ်ရှင်။`;
   const followUp = authorOnly ? "ဘယ်စာအုပ်လေး လိုချင်လဲ ပြောပါနော်။ အောက်က စာရင်းထဲက ရွေးလို့ရပါတယ်ရှင်။" : intro;
-  const lines = [`<b>${greeting}${headline}</b>`, followUp, `စာမျက်နှာ ${safePage + 1}/${pageCount}`];
+  const lines = [`<b>${greeting}${headline}</b>`, followUp];
+  if (formatRequest === "pdf") lines.push(`\n${nextPdfNote(chatId)}`);
+  lines.push(`စာမျက်နှာ ${safePage + 1}/${pageCount}`);
   const buttons = [];
   visible.forEach((row, index) => {
     const number = safePage * pageSize + index + 1;
@@ -651,14 +673,14 @@ async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = fa
   return editMessageId ? editMessage(env, chatId, editMessageId, lines.join("\n"), payload) : sendMessage(env, chatId, lines.join("\n"), payload);
 }
 
-async function sendSearch(env, chatId, query, cleanup = {}, exact = false, speaker = null, prefetchedRows = null) {
+async function sendSearch(env, chatId, query, cleanup = {}, exact = false, speaker = null, prefetchedRows = null, formatRequest = "") {
   const token = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const mention = speaker?.chatType && speaker.chatType !== "private" ? userMention(speaker.user) : "";
   const introIndex = nextSearchIntro(chatId);
-  const storedQuery = JSON.stringify({ query, exact, mention, introIndex });
+  const storedQuery = JSON.stringify({ query, exact, mention, introIndex, formatRequest });
   await env.DB.prepare("INSERT OR REPLACE INTO search_sessions(token,query,created_at) VALUES(?,?,?)")
     .bind(token, storedQuery, Math.floor(Date.now() / 1000)).run();
-  return sendSearchPage(env, chatId, query, 0, cleanup, exact, token, null, mention, introIndex, prefetchedRows);
+  return sendSearchPage(env, chatId, query, 0, cleanup, exact, token, null, mention, introIndex, prefetchedRows, formatRequest);
 }
 
 async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId = null) {
@@ -1218,7 +1240,7 @@ async function handleMessage(env, message) {
         const aiQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ");
         if (aiQuery) {
           const aiRows = await searchBooks(env, aiQuery);
-          if (aiRows.length) return sendSearch(env, message.chat.id, aiQuery, cleanup, false, { user: message.from, chatType: message.chat?.type }, aiRows);
+          if (aiRows.length) return sendSearch(env, message.chat.id, aiQuery, cleanup, false, { user: message.from, chatType: message.chat?.type }, aiRows, natural.requestedFormat);
         }
       } else if (interpreted?.confidence >= 0.55 && interpreted.intent === "reviews") {
         const reviewQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ");
@@ -1229,7 +1251,7 @@ async function handleMessage(env, message) {
         }
       }
     }
-    return sendSearch(env, message.chat.id, natural.query, cleanup, false, { user: message.from, chatType: message.chat?.type }, naturalRows);
+    return sendSearch(env, message.chat.id, natural.query, cleanup, false, { user: message.from, chatType: message.chat?.type }, naturalRows, natural.requestedFormat);
   }
   if (isGroup && !botMentioned) {
     // Do not fuzzy-search every ordinary group message. The original bot
@@ -1245,7 +1267,7 @@ async function handleMessage(env, message) {
       const aiQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ");
       if (aiQuery) {
         const aiRows = await searchBooks(env, aiQuery);
-        if (aiRows.length) return sendSearch(env, message.chat.id, aiQuery, cleanup, false, { user: message.from, chatType: message.chat?.type }, aiRows);
+        if (aiRows.length) return sendSearch(env, message.chat.id, aiQuery, cleanup, false, { user: message.from, chatType: message.chat?.type }, aiRows, /(?:pdf|ပီဒီအက်ဖ်)/iu.test(text) ? "pdf" : "");
       }
     } else if (interpreted?.confidence >= 0.55 && interpreted.intent === "reviews") {
       const reviewQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ");
@@ -1279,17 +1301,19 @@ async function handleCallback(env, query) {
     let exact;
     let mention = "";
     let introIndex = 0;
+    let formatRequest = "";
     try {
       const parsed = JSON.parse(stored);
       query = String(parsed.query || "");
       exact = Boolean(parsed.exact);
       mention = String(parsed.mention || "");
       introIndex = Number(parsed.introIndex) || 0;
+      formatRequest = String(parsed.formatRequest || "");
     } catch {
       exact = stored.startsWith("__exact__");
       query = stored.replace(/^__(?:exact|fuzzy)__/, "");
     }
-    return sendSearchPage(env, message.chat.id, query, Number(searchMatch[2]), {}, exact, searchMatch[1], message.message_id, mention, introIndex);
+    return sendSearchPage(env, message.chat.id, query, Number(searchMatch[2]), {}, exact, searchMatch[1], message.message_id, mention, introIndex, null, formatRequest);
   }
   const catalogMatch = String(action || "").match(/^catalog:(authors|books):(\d+)$/);
   if (catalogMatch) return catalogPage(env, message.chat.id, catalogMatch[1], Number(catalogMatch[2]), {}, message.message_id);
