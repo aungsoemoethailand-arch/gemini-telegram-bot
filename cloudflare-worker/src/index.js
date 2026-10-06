@@ -748,10 +748,12 @@ async function sendSearch(env, chatId, query, cleanup = {}, exact = false, speak
   const token = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const mention = speaker?.chatType && speaker.chatType !== "private" ? userMention(speaker.user) : "";
   const introIndex = nextSearchIntro(chatId);
-  const storedQuery = JSON.stringify({ query, exact, mention, introIndex, formatRequest });
+  const rows = prefetchedRows || (exact ? await searchExactBook(env, query) : await searchBooks(env, query));
+  const sessionRows = rows.slice(0, MAX_BOOK_RESULTS).map((row) => ({ chat_id: row.chat_id, author: row.author, title: row.title, link: row.link }));
+  const storedQuery = JSON.stringify({ query, exact, mention, introIndex, formatRequest, rows: sessionRows });
   await env.DB.prepare("INSERT OR REPLACE INTO search_sessions(token,query,created_at) VALUES(?,?,?)")
     .bind(token, storedQuery, Math.floor(Date.now() / 1000)).run();
-  return sendSearchPage(env, chatId, query, 0, cleanup, exact, token, null, mention, introIndex, prefetchedRows, formatRequest);
+  return sendSearchPage(env, chatId, query, 0, cleanup, exact, token, null, mention, introIndex, rows, formatRequest);
 }
 
 async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId = null) {
@@ -1363,7 +1365,7 @@ async function handleMessage(env, message) {
 }
 
 async function handleCallback(env, query) {
-  await telegram(env, "answerCallbackQuery", { callback_query_id: query.id });
+  telegram(env, "answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
   const action = query.data;
   const message = query.message;
   if (!message) return;
@@ -1382,6 +1384,7 @@ async function handleCallback(env, query) {
     let mention = "";
     let introIndex = 0;
     let formatRequest = "";
+    let cachedRows = null;
     try {
       const parsed = JSON.parse(stored);
       query = String(parsed.query || "");
@@ -1389,11 +1392,12 @@ async function handleCallback(env, query) {
       mention = String(parsed.mention || "");
       introIndex = Number(parsed.introIndex) || 0;
       formatRequest = String(parsed.formatRequest || "");
+      cachedRows = Array.isArray(parsed.rows) ? parsed.rows : null;
     } catch {
       exact = stored.startsWith("__exact__");
       query = stored.replace(/^__(?:exact|fuzzy)__/, "");
     }
-    return sendSearchPage(env, message.chat.id, query, Number(searchMatch[2]), {}, exact, searchMatch[1], message.message_id, mention, introIndex, null, formatRequest);
+    return sendSearchPage(env, message.chat.id, query, Number(searchMatch[2]), {}, exact, searchMatch[1], message.message_id, mention, introIndex, cachedRows, formatRequest);
   }
   const catalogMatch = String(action || "").match(/^catalog:(authors|books):(\d+)$/);
   if (catalogMatch) return catalogPage(env, message.chat.id, catalogMatch[1], Number(catalogMatch[2]), {}, message.message_id);
