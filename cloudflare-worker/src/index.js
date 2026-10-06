@@ -864,6 +864,69 @@ async function sendReviews(env, chatId, query, reviews, cleanup = {}) {
   return sendMessage(env, chatId, lines.join("\n"), { ...cleanup, ...(buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}) });
 }
 
+async function catalogDeleteAllowed(env, message) {
+  return message.chat?.type === "private" && await isBotAdmin(env, message.from);
+}
+
+async function findDeleteBooks(env, query = "") {
+  const rows = await env.DB.prepare("SELECT id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
+  const needle = normalize(query);
+  const terms = String(query || "").split(/\s+/).map(normalize).filter(Boolean);
+  return (rows.results || []).filter((row) => {
+    if (isReviewRecord(row)) return false;
+    if (!needle) return true;
+    const haystack = normalize(`${row.author} ${row.title}`);
+    return haystack.includes(needle) || (terms.length > 1 && terms.every((term) => haystack.includes(term)));
+  }).slice(0, 10);
+}
+
+async function createDeleteSession(env, requesterId, chatId, bookId) {
+  const token = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+  await env.DB.prepare("INSERT INTO delete_sessions(token,requester_id,chat_id,book_id,created_at) VALUES(?,?,?,?,?)")
+    .bind(token, requesterId, chatId, bookId, Math.floor(Date.now() / 1000)).run();
+  return token;
+}
+
+async function sendDeleteConfirmation(env, message, book, cleanup = {}) {
+  const token = await createDeleteSession(env, message.from.id, message.chat.id, book.id);
+  return sendMessage(env, message.chat.id,
+    `<b>🗑 စာအုပ်ဖျက်ရန် အတည်ပြုပါ</b>\n\n✍️ စာရေးသူ: <b>${escapeHtml(book.author || "မသိရသေးပါ")}</b>\n📖 စာအုပ်: <b>${escapeHtml(book.title || "ခေါင်းစဉ်မရှိ")}</b>\n\nဒီစာအုပ်ကို catalog ထဲက ဖျက်မှာ သေချာပါသလားရှင်? Channel မူရင်း post ကတော့ မပျက်ပါဘူး။`, {
+      ...cleanup,
+      reply_markup: { inline_keyboard: [[
+        { text: "✅ ဖျက်မည်", callback_data: `delete:yes:${token}` },
+        { text: "❌ မဖျက်တော့ပါ", callback_data: `delete:no:${token}` },
+      ]] },
+    });
+}
+
+async function sendDeleteCandidates(env, message, books, cleanup = {}) {
+  if (!books.length) return sendMessage(env, message.chat.id, "ဒီနာမည်နဲ့ ဖျက်လို့ရမယ့် catalog စာအုပ် မတွေ့ပါဘူးရှင်။ စာရေးသူနဲ့ စာအုပ်နာမည်ကို ပြန်စစ်ပေးပါနော်။", cleanup);
+  const buttons = [];
+  for (const book of books) {
+    const token = await createDeleteSession(env, message.from.id, message.chat.id, book.id);
+    buttons.push([{ text: `🗑 ${String(book.title || "စာအုပ်").slice(0, 48)} — ${String(book.author || "").slice(0, 20)}`, callback_data: `delete:pick:${token}` }]);
+  }
+  return sendMessage(env, message.chat.id, `<b>ဖျက်ချင်တဲ့ စာအုပ်ကို ရွေးပေးပါရှင်။</b>\n\nတွေ့ထားတဲ့ catalog စာအုပ် ${books.length} အုပ်ထဲက ရွေးနိုင်ပါတယ်။ ရွေးပြီးရင်လည်း အတည်ပြုချက် ထပ်တောင်းပါမယ်။`, { ...cleanup, reply_markup: { inline_keyboard: buttons } });
+}
+
+function deleteQueryFromReply(message) {
+  const text = String(message.reply_to_message?.text || message.reply_to_message?.caption || "");
+  const titleLine = text.match(/(?:စာအုပ်နာမည်|စာအုပ်အမည်|title)\s*[:：-]\s*(.+)/i);
+  const authorLine = text.match(/(?:စာရေးသူ|author)\s*[:：-]\s*(.+)/i);
+  if (titleLine || authorLine) return [authorLine?.[1] || "", titleLine?.[1] || ""].filter(Boolean).join(" ");
+  const numbered = text.match(/^\s*1\.\s*(.+?)\s+—\s+(.+?)\s*$/m);
+  return numbered ? `${numbered[2]} ${numbered[1]}` : "";
+}
+
+async function handleDeleteCommand(env, message, query, reply) {
+  if (!(await catalogDeleteAllowed(env, message))) return reply("စာအုပ်ဖျက်တာကို owner သို့မဟုတ် bot admin က private DM မှာပဲ သုံးနိုင်ပါတယ်ရှင်။");
+  const targetQuery = query || deleteQueryFromReply(message);
+  const books = await findDeleteBooks(env, targetQuery);
+  if (!targetQuery) return sendDeleteCandidates(env, message, books);
+  if (books.length === 1) return sendDeleteConfirmation(env, message, books[0]);
+  return sendDeleteCandidates(env, message, books);
+}
+
 async function isBotAdmin(env, user) {
   if (await isAdmin(env, user)) return true;
   if (!user?.id) return false;
@@ -1244,6 +1307,7 @@ async function handleCommand(env, message) {
     await env.DB.prepare("INSERT OR REPLACE INTO bot_admins(user_id,username,added_by,created_at) VALUES(?,?,?,?)").bind(target, String(args[0] || "").replace(/^@/, ""), message.from.id, Math.floor(Date.now() / 1000)).run();
     return reply(`✅ Bot admin ထည့်ပြီးပါပြီ။\nUser: <code>${escapeHtml(target)}</code>`);
   }
+  if (command === "/del" || command === "/delete") return handleDeleteCommand(env, message, query, reply);
   if (command === "/admins") {
     if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
     const rows = await env.DB.prepare("SELECT user_id,username FROM bot_admins ORDER BY created_at").all();
@@ -1433,6 +1497,26 @@ async function handleCallback(env, query) {
   if (action === "help_authors") return handleCommand(env, { chat: message.chat, text: "/authors" });
   if (action === "help_books") return handleCommand(env, { chat: message.chat, text: "/books" });
   if (action === "help_stats") return handleCommand(env, { chat: message.chat, text: "/stats" });
+  const deleteMatch = String(action || "").match(/^delete:(yes|no|pick):([a-z0-9]+)$/);
+  if (deleteMatch) {
+    const [, choice, token] = deleteMatch;
+    const session = await env.DB.prepare("SELECT token,requester_id,chat_id,book_id FROM delete_sessions WHERE token=? AND created_at>? ")
+      .bind(token, Math.floor(Date.now() / 1000) - 3600).first();
+    if (!session) return sendMessage(env, message.chat.id, "ဒီဖျက်ရန် button သက်တမ်းကုန်သွားပါပြီရှင်။ စာအုပ်ကို ပြန်ရွေးပေးပါနော်။");
+    if (String(session.requester_id) !== String(query.from?.id) || String(session.chat_id) !== String(message.chat.id)) {
+      return sendMessage(env, message.chat.id, "ဒီစာအုပ်ဖျက်ရန် button ကို ရွေးထားတဲ့ admin ပဲ ဆက်လုပ်နိုင်ပါတယ်ရှင်။");
+    }
+    const book = await env.DB.prepare("SELECT id,author,title FROM books WHERE id=?").bind(session.book_id).first();
+    if (!book) {
+      await env.DB.prepare("DELETE FROM delete_sessions WHERE token=?").bind(token).run();
+      return editMessage(env, message.chat.id, message.message_id, "ဒီစာအုပ်က catalog ထဲမှာ မရှိတော့ပါဘူးရှင်။");
+    }
+    if (choice === "pick") return sendDeleteConfirmation(env, { chat: message.chat, from: query.from }, book);
+    await env.DB.prepare("DELETE FROM delete_sessions WHERE token=?").bind(token).run();
+    if (choice === "no") return editMessage(env, message.chat.id, message.message_id, "မဖျက်တော့ပါဘူးရှင်။ စာအုပ်က catalog ထဲမှာ ဆက်ရှိနေပါမယ်။");
+    await env.DB.prepare("DELETE FROM books WHERE id=?").bind(book.id).run();
+    return editMessage(env, message.chat.id, message.message_id, `✅ <b>ဖျက်ပြီးပါပြီရှင်။</b>\n\n✍️ ${escapeHtml(book.author || "") }\n📖 ${escapeHtml(book.title || "") }\n\nChannel မူရင်း post ကတော့ မပျက်ပါဘူး။`);
+  }
   const searchMatch = String(action || "").match(/^search:([a-z0-9]+):(\d+)$/);
   if (searchMatch) {
     const session = await env.DB.prepare("SELECT query FROM search_sessions WHERE token=? AND created_at>? ").bind(searchMatch[1], Math.floor(Date.now() / 1000) - 86400).first();
