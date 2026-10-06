@@ -28,6 +28,31 @@ function nextSearchIntro(chatId) {
   return index;
 }
 
+const NO_RESULT_RESPONSES = [
+  "ဒီနာမည်နဲ့တော့ catalog ထဲမှာ မတွေ့သေးပါဘူးရှင်။ စာလုံးပေါင်းလေး ပြန်စစ်ပြီး ထပ်မေးကြည့်ပေးပါနော်။",
+  "ရှာပေးကြည့်တာ ဒီတစ်ခါတော့ မတွေ့သေးဘူးရှင်။ စာရေးသူနာမည်ပဲဖြစ်ဖြစ်၊ စာအုပ်နာမည်ပဲဖြစ်ဖြစ် တစ်မျိုးစီနဲ့ မေးကြည့်လို့ရပါတယ်နော်။",
+  "အခုရှိတဲ့ စာအုပ်စာရင်းထဲမှာ ဒီနာမည်လေး မပါသေးပါဘူးရှင်။ နာမည်အပြည့်အစုံ ဒါမှမဟုတ် စာလုံးနည်းနည်းနဲ့ ထပ်ရှာပေးနိုင်ပါတယ်နော်။",
+  "ဒီစာအုပ်/စာရေးသူကို ရှာမတွေ့သေးပါဘူးရှင်။ စာလုံးပေါင်းတစ်ချက် ပြန်စစ်ပေးမလားနော်။",
+  "မတွေ့သေးလို့ စိတ်မကောင်းပါဘူးရှင်။ နာမည်ရဲ့ တစ်စိတ်တစ်ပိုင်းလေးနဲ့ ထပ်ရှာကြည့်ပေးပါမယ်နော်။",
+  "ဒီတစ်ခါတော့ ရလဒ်မထွက်သေးပါဘူးရှင်။ ရေးသားပုံနည်းနည်းပြောင်းပြီး ထပ်မေးကြည့်ပါနော်။",
+  "Catalog ထဲမှာ ဒီနာမည်ကို မတွေ့ရသေးပါဘူးရှင်။ စာရေးသူနာမည်နဲ့ သီးသန့်ရှာကြည့်ရင်လည်း ရပါတယ်နော်။",
+  "ရှာပေးထားပေမယ့် ဒီနာမည်နဲ့ စာအုပ် မတွေ့သေးပါဘူးရှင်။ နာမည်နည်းနည်းကွဲနေတာ ဖြစ်နိုင်လို့ ပြန်မေးကြည့်ပေးပါနော်။",
+  "ဒီနာမည်လေးကို catalog ထဲမှာ မတွေ့သေးဘူးရှင်။ ထည့်သွင်းထားတဲ့ စာရင်းထဲ မပါသေးတာလည်း ဖြစ်နိုင်ပါတယ်နော်။",
+  "အခုလက်ရှိစာရင်းနဲ့တော့ မတွေ့သေးပါဘူးရှင်။ အခြားစာလုံးပေါင်းပုံနဲ့ ရှာပေးရမလား ပြောပါနော်။",
+  "ဒီစာအုပ်လေးကို မတွေ့သေးပါဘူးရှင်။ စာအုပ်နာမည်နဲ့ စာရေးသူနာမည်ကို ခွဲပြီး ထပ်မေးကြည့်ပါနော်။",
+  "ရှာကြည့်ပြီးပါပြီရှင်၊ ဒီနာမည်နဲ့ ကိုက်ညီတာ မတွေ့သေးပါဘူး။ နာမည်အတိုလေးနဲ့ ထပ်စမ်းကြည့်လို့ရပါတယ်နော်။",
+];
+
+function nextNoResult(chatId) {
+  const key = String(chatId);
+  const previous = lastNoResult.get(key);
+  const choices = NO_RESULT_RESPONSES.map((_, index) => index).filter((index) => index !== previous);
+  const index = choices[Math.floor(Math.random() * choices.length)] ?? 0;
+  lastNoResult.set(key, index);
+  if (lastNoResult.size > 500) lastNoResult.delete(lastNoResult.keys().next().value);
+  return NO_RESULT_RESPONSES[index];
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -535,7 +560,10 @@ async function searchExactBook(env, query) {
 
 async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = false, token = "", editMessageId = null, mention = "", introIndex = null, prefetchedRows = null) {
   const rows = prefetchedRows || (exact ? await searchExactBook(env, query) : await searchBooks(env, query));
-  if (!rows.length) return sendMessage(env, chatId, `${mention ? `${mention} ရေ၊ ` : ""}ထည့်သွင်းထားတဲ့ catalog ထဲမှာ မတွေ့ပါဘူးရှင်။`, cleanup);
+  if (!rows.length) {
+    const name = `<b>${escapeHtml(query)}</b>`;
+    return sendMessage(env, chatId, `${mention ? `${mention} ရေ၊ ` : ""}${name} — ${nextNoResult(chatId)}`, cleanup);
+  }
   const pageSize = 5;
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
   const safePage = Math.max(0, Math.min(Number(page) || 0, pageCount - 1));
