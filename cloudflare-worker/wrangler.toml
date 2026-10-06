@@ -7,13 +7,15 @@ WORKER_URL = "https://gemini-telegram-webhook.aungsoemoe-thailand.workers.dev"
 ENABLE_WEBHOOK = "true"
 ADMIN_TELEGRAM_ID = ""
 AUTO_DELETE_ENABLED = "false"
+ENABLE_MORNING_GREETING = "false"
+ENABLE_MEMBER_GREETING = "false"
 COMMAND_AUTO_DELETE_SECONDS = "30"
 AUTO_DELETE_MINUTES = "3"
 # Set secrets with: npx wrangler secret put TELEGRAM_BOT_TOKEN
 # Optional: npx wrangler secret put TELEGRAM_SECRET_TOKEN
 
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["0 * * * *"]
 
 [[d1_databases]]
 binding = "DB"

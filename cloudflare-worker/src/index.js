@@ -193,6 +193,14 @@ function autoDeleteEnabled(env) {
   return env.AUTO_DELETE_ENABLED !== "false" && env.AUTO_DELETE_ENABLED !== "0";
 }
 
+function morningGreetingEnabled(env) {
+  return env.ENABLE_MORNING_GREETING !== "false" && env.ENABLE_MORNING_GREETING !== "0";
+}
+
+function memberGreetingEnabled(env) {
+  return env.ENABLE_MEMBER_GREETING !== "false" && env.ENABLE_MEMBER_GREETING !== "0";
+}
+
 function commandDeleteSeconds(env) {
   return Math.max(0, Number(env.COMMAND_AUTO_DELETE_SECONDS || 30));
 }
@@ -318,6 +326,7 @@ function bangkokClock() {
 }
 
 async function sendMorningGreetings(env) {
+  if (!morningGreetingEnabled(env)) return;
   const clock = bangkokClock();
   if (clock.hour !== 7 || clock.minute > 4) return;
   const groups = await connectedGroups(env);
@@ -1097,6 +1106,7 @@ async function sendTemporaryMembershipMessage(env, chatId, text) {
 }
 
 async function sendMembershipGreetings(env, message, kind) {
+  if (!memberGreetingEnabled(env)) return;
   const members = kind === "welcome" ? message.new_chat_members || [] : [message.left_chat_member];
   for (const member of members) {
     if (!member?.id) continue;
