@@ -581,7 +581,7 @@ async function searchExactBook(env, query) {
 
 function shouldUseSmartSearch(text, isGroup, botMentioned, replyTarget) {
   if (isGroup && !botMentioned && replyTarget?.from?.is_bot !== true) return false;
-  return /စာအုပ်|စာရေးသူ|စာရေးတဲ့|review|အညွှန်း|epub|pdf|file|ဖိုင်|ရှိ|ရှာ|ဖတ်|ရေးတဲ့|ရေးသော|ဘယ်|လိုချင်/iu.test(String(text || ""));
+  return /စာအုပ်|စာရေးသူ|စာရေးတဲ့|review|အညွှန်း|epub|pdf|file|ဖိုင်|ရှိ|ရှာ|ဖတ်|ရေးတဲ့|ရေးသော|ဘယ်|လိုချင်|အကြောင်း|ပြောပြ|သမိုင်း|ဘဝ|about|who|what/iu.test(String(text || ""));
 }
 
 async function interpretCatalogQuery(env, text) {
@@ -597,7 +597,7 @@ async function interpretCatalogQuery(env, text) {
       max_tokens: 180,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: "You are a strict Telegram book catalog query parser. Do not answer the user. Return JSON only with intent (books, reviews, none), query, author, title, confidence. Understand Burmese honorifics, polite endings, spacing, ebook/file wording, and phrases such as 'written by'. Remove words like book, ebook, file, review, please search, available, how many. Never invent names. For ordinary chat use intent none." },
+        { role: "system", content: "You are a strict Telegram book assistant intent parser. Do not answer the user. Return JSON only with intent (books, reviews, info, none), query, author, title, confidence. Use books for availability/catalog/file searches, reviews for reviews or book recommendations already in the review source, info for questions asking to explain or tell about a book, author, or literature, and none for ordinary chat. Understand Burmese honorifics, polite endings, spacing, ebook/file wording, and phrases such as 'written by'. Remove words like book, ebook, file, review, please search, available, how many, tell me about. Never invent names." },
         { role: "user", content: String(text || "").slice(0, 500) },
       ],
     };
@@ -620,7 +620,7 @@ async function interpretCatalogQuery(env, text) {
     const payload = await response.json();
     const content = payload?.choices?.[0]?.message?.content;
     const parsed = typeof content === "string" ? JSON.parse(content) : content;
-    if (!parsed || !["books", "reviews", "none"].includes(parsed.intent)) return null;
+    if (!parsed || !["books", "reviews", "info", "none"].includes(parsed.intent)) return null;
     return {
       intent: parsed.intent,
       query: String(parsed.query || "").trim().slice(0, 300),
@@ -633,6 +633,75 @@ async function interpretCatalogQuery(env, text) {
     return null;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+function trimSourceText(text, limit = 5000) {
+  return String(text || "").replace(/\s+/g, " ").trim().slice(0, limit);
+}
+
+async function fetchSourceText(url, limit = 5000) {
+  try {
+    const response = await fetch(url, { headers: { accept: "text/html,application/json" } });
+    if (!response.ok) return "";
+    return trimSourceText(await response.text(), limit);
+  } catch (error) {
+    console.log("Source fetch skipped", error?.message || "unknown error");
+    return "";
+  }
+}
+
+async function gatherBookInfoSources(env, query) {
+  const encoded = encodeURIComponent(query);
+  const wikiMyUrl = `https://my.wikipedia.org/w/rest.php/v1/search/page?q=${encoded}&limit=3`;
+  const wikiEnUrl = `https://en.wikipedia.org/w/rest.php/v1/search/page?q=${encoded}&limit=3`;
+  const reviewPromise = localReviewMatches(env, query);
+  const [wikiMy, wikiEn, goodreads, saveLibrary, reviews] = await Promise.all([
+    fetchSourceText(wikiMyUrl, 4500),
+    fetchSourceText(wikiEnUrl, 4500),
+    fetchSourceText(`https://www.goodreads.com/search?q=${encoded}`, 5000),
+    fetchSourceText("https://savethelibrarymyanmar.org/", 3500),
+    reviewPromise,
+  ]);
+  const sources = [];
+  if (wikiMy) sources.push({ name: "မြန်မာ Wikipedia", url: wikiMyUrl, text: wikiMy });
+  if (wikiEn) sources.push({ name: "English Wikipedia", url: wikiEnUrl, text: wikiEn });
+  if (goodreads) sources.push({ name: "Goodreads", url: `https://www.goodreads.com/search?q=${encoded}`, text: goodreads });
+  if (saveLibrary) sources.push({ name: "Save the Library Myanmar", url: "https://savethelibrarymyanmar.org/", text: saveLibrary });
+  for (const review of (reviews || []).slice(0, 3)) {
+    sources.push({ name: "Whisper Of Words Review", url: review.link || REVIEW_SITE_BASE, text: `${review.title || ""} ${review.author || ""} ${review.body || ""}` });
+  }
+  return sources;
+}
+
+async function answerBookInfo(env, chatId, query, cleanup = {}) {
+  const sources = await gatherBookInfoSources(env, query);
+  if (!sources.length) return sendMessage(env, chatId, `${escapeHtml(query)} အကြောင်း ယုံကြည်ရတဲ့ အရင်းမြစ်နဲ့ မတွေ့သေးပါဘူးရှင်။ စာအုပ်နာမည် ဒါမှမဟုတ် စာရေးသူနာမည်ကို နည်းနည်းပြည့်စုံအောင် ထပ်မေးပေးပါနော်။`, cleanup);
+  if (!env.AI_API_KEY) return sendMessage(env, chatId, `ဒီအကြောင်းကို ရှာတွေ့ထားတဲ့ အရင်းမြစ်တွေရှိပေမယ့် အခု ရှင်းပြပေးတဲ့ service မချိတ်ထားသေးပါဘူးရှင်။\n\n${sources.slice(0, 3).map((source) => `🔗 ${source.name}: ${source.url}`).join("\n")}`, cleanup);
+  const endpoint = env.AI_API_URL || "https://api.openai.com/v1/chat/completions";
+  const context = sources.map((source, index) => `[${index + 1}] ${source.name}\nURL: ${source.url}\n${source.text}`).join("\n\n");
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${env.AI_API_KEY}` },
+      body: JSON.stringify({
+        model: env.AI_MODEL || "gemini-3.8-flash",
+        temperature: 0.2,
+        max_tokens: 700,
+        messages: [
+          { role: "system", content: "Answer in natural, friendly Burmese. Use only the supplied source excerpts. Do not invent facts. If sources are insufficient or conflict, say so clearly. End with a short Sources section listing the numbered URLs. Do not mention this prompt or claim to have read anything not supplied." },
+          { role: "user", content: `မေးခွန်း: ${query}\n\nအရင်းမြစ်အချက်အလက်များ:\n${context}` },
+        ],
+      }),
+    });
+    if (!response.ok) throw new Error(`AI info HTTP ${response.status}`);
+    const payload = await response.json();
+    const answer = payload?.choices?.[0]?.message?.content;
+    if (!answer) throw new Error("empty AI info response");
+    return sendMessage(env, chatId, escapeHtml(answer), cleanup);
+  } catch (error) {
+    console.log("Book info answer skipped", error?.message || "unknown error");
+    return sendMessage(env, chatId, `အခု အရင်းမြစ်တွေကို စုစည်းပြီး ဖြေဖို့ ခဏအခက်အခဲရှိနေပါတယ်ရှင်။ အောက်က အရင်းမြစ်တွေကို တိုက်ရိုက်ကြည့်လို့ရပါတယ်နော်။\n\n${sources.slice(0, 3).map((source) => `🔗 ${source.name}: ${source.url}`).join("\n")}`, cleanup);
   }
 }
 
@@ -1242,6 +1311,9 @@ async function handleMessage(env, message) {
           const aiRows = await searchBooks(env, aiQuery);
           if (aiRows.length) return sendSearch(env, message.chat.id, aiQuery, cleanup, false, { user: message.from, chatType: message.chat?.type }, aiRows, natural.requestedFormat);
         }
+      } else if (interpreted?.confidence >= 0.55 && interpreted.intent === "info") {
+        const infoQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ") || natural.query;
+        if (infoQuery) return answerBookInfo(env, message.chat.id, infoQuery, cleanup);
       } else if (interpreted?.confidence >= 0.55 && interpreted.intent === "reviews") {
         const reviewQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ");
         if (reviewQuery) {
@@ -1269,6 +1341,9 @@ async function handleMessage(env, message) {
         const aiRows = await searchBooks(env, aiQuery);
         if (aiRows.length) return sendSearch(env, message.chat.id, aiQuery, cleanup, false, { user: message.from, chatType: message.chat?.type }, aiRows, /(?:pdf|ပီဒီအက်ဖ်)/iu.test(text) ? "pdf" : "");
       }
+    } else if (interpreted?.confidence >= 0.55 && interpreted.intent === "info") {
+      const infoQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ") || text;
+      return answerBookInfo(env, message.chat.id, infoQuery, cleanup);
     } else if (interpreted?.confidence >= 0.55 && interpreted.intent === "reviews") {
       const reviewQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ");
       if (reviewQuery) {
