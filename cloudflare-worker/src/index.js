@@ -110,6 +110,7 @@ function extractNaturalSearchQuery(text) {
     .replace(/(?:ရှာပေးပါ|ရှာပေး|ရှာပါ|ရှာချင်တယ်|ရှာချင်|ရှာပေးစေချင်|လိုချင်တယ်|လိုချင်|ပေးပါ|ပြပေးပါ|ပြပေး|ဖြေပေးပါ)/gu, " ")
     .replace(/(?:ဘယ်နှအုပ်|ဘယ်နှစ်အုပ်|ဘယ်လောက်|အရေအတွက်|ဘယ်စာအုပ်|ဘယ်ဟာ)/gu, " ")
     .replace(/(?:review|စာအုပ်အညွှန်း|သုံးသပ်ချက်|အညွှန်း)/giu, " ")
+    .replace(/(?:အကြောင်းအရာ|အကြောင်းကို|အကြောင်းလေး|အကြောင်း)/gu, " ")
     .replace(/(?:ရဲ့|၏|ရေးတဲ့|ရေးသော|ရေးသည့်|သည်|ကော|ကို|အကြောင်း)/gu, " ")
     .replace(/[၊။!?၊,:;()\[\]{}"'`]+/gu, " ")
     .replace(/\s+/g, " ")
@@ -1304,6 +1305,9 @@ async function handleMessage(env, message) {
     const naturalRows = await searchBooks(env, natural.query);
     if (naturalRows.length) return sendSearch(env, message.chat.id, natural.query, cleanup, false, { user: message.from, chatType: message.chat?.type }, naturalRows, natural.requestedFormat);
     if (shouldUseSmartSearch(text, isGroup, botMentioned, replyTarget)) {
+      if (/(?:စာအုပ်|စာရေးသူ|စာရေးဆရာ|စာပေ).*(?:အကြောင်း|ပြောပြ|ရှင်းပြ)|(?:အကြောင်း|ပြောပြ|ရှင်းပြ).*(?:စာအုပ်|စာရေးသူ|စာရေးဆရာ|စာပေ)/iu.test(text)) {
+        return answerBookInfo(env, message.chat.id, natural.query, cleanup);
+      }
       const interpreted = await interpretCatalogQuery(env, text);
       if (interpreted?.confidence >= 0.55 && interpreted.intent === "books") {
         const aiQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ");
