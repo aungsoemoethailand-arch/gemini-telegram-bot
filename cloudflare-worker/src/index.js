@@ -473,7 +473,7 @@ async function ensureWebhook(env) {
   await telegram(env, "setWebhook", {
     url: env.WORKER_URL,
     secret_token: env.TELEGRAM_SECRET_TOKEN || undefined,
-    allowed_updates: ["message", "edited_message", "channel_post", "callback_query", "chat_member", "my_chat_member", "chat_join_request"],
+    allowed_updates: ["message", "edited_message", "channel_post", "callback_query", "chat_member", "my_chat_member"],
   });
 }
 
@@ -1166,22 +1166,6 @@ async function sendMembershipGreetings(env, message, kind) {
   }
 }
 
-async function handleJoinRequest(env, request) {
-  const chat = request.chat;
-  const user = request.from;
-  if (!chat || !user) return;
-  await rememberChat(env, chat);
-  const message = { chat, from: user };
-  try {
-    console.log("Join request received", chat.id, user.id, user.username || user.first_name || "unknown");
-    await telegram(env, "approveChatJoinRequest", { chat_id: chat.id, user_id: user.id });
-    await auditAction(env, message, "join_request_auto_approved", user.id, `${user.username || user.first_name || "unknown"}`);
-  } catch (error) {
-    console.error("Join request handling failed", error?.message || "unknown error");
-    await auditAction(env, message, "join_request_error", user.id, error?.message || "Telegram API error");
-  }
-}
-
 async function membershipEvent(env, update, kind = "member_status_changed") {
   const event = update.chat_member || update.my_chat_member;
   if (!event?.chat || !isGroupChat(event.chat)) return;
@@ -1209,10 +1193,6 @@ async function membershipEvent(env, update, kind = "member_status_changed") {
     details = `${target?.username ? `@${target.username}` : targetId} unrestricted`;
   }
   await auditAction(env, { chat: event.chat, from: event.from }, action, targetId, details);
-}
-
-function isServiceMessage(message) {
-  return Boolean(message?.new_chat_members?.length || message?.left_chat_member || message?.pinned_message || message?.delete_chat_photo || message?.group_chat_created || message?.supergroup_chat_created || message?.new_chat_title || message?.new_chat_photo || message?.migrate_to_chat_id || message?.migrate_from_chat_id || message?.message_auto_delete_timer_changed);
 }
 
 async function deleteAfterDelay(env, chatId, messageId, milliseconds) {
@@ -1569,8 +1549,6 @@ export default {
         ctx.waitUntil(importChannelPost(env, update.channel_post).catch((error) => console.error("Channel import failed", error?.message || "unknown error")));
       } else if (update.callback_query) {
         ctx.waitUntil(handleCallback(env, update.callback_query).catch((error) => console.error("Callback failed", error?.message || "unknown error")));
-      } else if (update.chat_join_request) {
-        ctx.waitUntil(handleJoinRequest(env, update.chat_join_request).catch((error) => console.error("Join request failed", error?.message || "unknown error")));
       } else if (update.chat_member) {
         ctx.waitUntil(membershipEvent(env, update, "member_status_changed").catch((error) => console.error("Chat member audit failed", error?.message || "unknown error")));
       } else if (update.my_chat_member) {
@@ -1580,9 +1558,6 @@ export default {
       } else if (update.message) {
         const message = update.message;
         ctx.waitUntil(rememberChat(env, message.chat));
-        if (isGroupMessage(message) && isServiceMessage(message)) {
-          ctx.waitUntil(deleteAfterDelay(env, message.chat.id, message.message_id, 2000));
-        }
         ctx.waitUntil(enforceForwardPolicy(env, message).then(async (blocked) => {
           if (blocked) return null;
           if (message.text) {
