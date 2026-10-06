@@ -550,23 +550,215 @@ async function webhookHealth(env) {
 }
 
 async function saveRecords(env, chatId, messageId, records, rawText) {
-  const statements = records.map((record, recordNo) => env.DB.prepare(
-    `INSERT INTO books(chat_id,message_id,record_no,author,title,link,raw_text,created_at)
-     VALUES(?,?,?,?,?,?,?,?)
-     ON CONFLICT(chat_id,message_id,record_no) DO UPDATE SET
-       author=excluded.author,title=excluded.title,link=excluded.link,
-       raw_text=excluded.raw_text,created_at=excluded.created_at`
-  ).bind(
-    chatId,
-    messageId,
-    recordNo,
-    record.author || "",
-    record.title || "",
-    record.link || messageLink(chatId, messageId),
-    rawText || "",
-    new Date().toISOString(),
-  ));
-  if (statements.length) await env.DB.batch(statements);
+  const statements = [];
+  records.forEach((record, recordNo) => {
+    const author = record.author || "";
+    const title = record.title || "";
+    const link = record.link || messageLink(chatId, messageId);
+    const createdAt = new Date().toISOString();
+    statements.push(env.DB.prepare(
+      `INSERT INTO books(chat_id,message_id,record_no,author,title,link,raw_text,created_at)
+       VALUES(?,?,?,?,?,?,?,?)
+       ON CONFLICT(chat_id,message_id,record_no) DO UPDATE SET
+         author=excluded.author,title=excluded.title,link=excluded.link,
+         raw_text=excluded.raw_text,created_at=excluded.created_at`
+    ).bind(chatId, messageId, recordNo, author, title, link, rawText || "", createdAt));
+    statements.push(env.DB.prepare(
+      `INSERT INTO github_sync_outbox(chat_id,message_id,record_no,author,title,link,created_at)
+       VALUES(?,?,?,?,?,?,?)
+       ON CONFLICT(chat_id,message_id,record_no) DO UPDATE SET
+         author=excluded.author,title=excluded.title,link=excluded.link,created_at=excluded.created_at,
+         sync_state='pending',attempt_count=0,last_error='',synced_at=''`
+    ).bind(chatId, messageId, recordNo, author, title, link, createdAt));
+  });
+  for (let index = 0; index < statements.length; index += 50) {
+    await env.DB.batch(statements.slice(index, index + 50));
+  }
+  if (statements.length) await syncPendingGitHub(env);
+}
+
+const GITHUB_BOOKS_API = "https://api.github.com/repos/aungsoemoethailand-arch/gemini-telegram-bot/contents/data/telegram_books.csv";
+const GITHUB_BOOKS_BRANCH = "main";
+
+function publicBookMetadata(record) {
+  const author = String(record.author || "").replace(/\s+/gu, " ").trim();
+  const title = String(record.title || "").replace(/\s+/gu, " ").trim();
+  const link = String(record.link || "").trim();
+  if (!title || author.length > 100 || title.length > 160 || link.length > 2048) return null;
+  if (link && !/^https?:\/\/\S+$/iu.test(link)) return null;
+  return { author, title, link };
+}
+
+function csvField(value) {
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
+function csvRow(values) {
+  return values.map(csvField).join(",");
+}
+
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quoted) {
+      if (character === '"' && text[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else if (character === '"') {
+        quoted = false;
+      } else {
+        field += character;
+      }
+    } else if (character === '"' && field === "") {
+      quoted = true;
+    } else if (character === ",") {
+      row.push(field);
+      field = "";
+    } else if (character === "\n") {
+      row.push(field.replace(/\r$/u, ""));
+      rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += character;
+    }
+  }
+  if (quoted) throw new Error("invalid_csv_quotes");
+  if (field.length || row.length) {
+    row.push(field.replace(/\r$/u, ""));
+    rows.push(row);
+  }
+  return rows;
+}
+
+function decodeBase64Utf8(encoded) {
+  const binary = atob(String(encoded || "").replace(/\s/gu, ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new TextDecoder().decode(bytes);
+}
+
+function encodeBase64Utf8(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
+}
+
+async function markGitHubOutbox(env, records, state, error = "") {
+  const syncedAt = state === "synced" ? new Date().toISOString() : "";
+  const increment = state === "pending" ? 1 : 0;
+  const statements = records.map((record) => env.DB.prepare(
+    `UPDATE github_sync_outbox
+     SET sync_state=?,attempt_count=attempt_count+?,last_error=?,synced_at=?
+     WHERE chat_id=? AND message_id=? AND record_no=?`
+  ).bind(state, increment, error.slice(0, 120), syncedAt, record.chat_id, record.message_id, record.record_no));
+  for (let index = 0; index < statements.length; index += 50) {
+    await env.DB.batch(statements.slice(index, index + 50));
+  }
+}
+
+async function syncPendingGitHub(env) {
+  const token = String(env.GITHUB_SYNC_TOKEN || "").trim();
+  if (!token) return;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "gemini-telegram-webhook",
+  };
+
+  for (let batchNumber = 0; batchNumber < 10; batchNumber += 1) {
+    let pending = [];
+    try {
+      const result = await env.DB.prepare(
+        `SELECT chat_id,message_id,record_no,author,title,link
+         FROM github_sync_outbox WHERE sync_state='pending' ORDER BY created_at LIMIT 50`
+      ).all();
+      pending = result.results || [];
+      if (!pending.length) return;
+
+      const valid = [];
+      const blocked = [];
+      for (const record of pending) {
+        const book = publicBookMetadata(record);
+        if (book) valid.push({ record, book });
+        else blocked.push(record);
+      }
+      if (blocked.length) await markGitHubOutbox(env, blocked, "blocked", "unsafe_public_metadata");
+      if (!valid.length) continue;
+
+      let content = "author,title,link\n";
+      let sha = "";
+      const getResponse = await fetch(`${GITHUB_BOOKS_API}?ref=${GITHUB_BOOKS_BRANCH}`, { headers });
+      if (getResponse.status === 404) {
+        // The file is created on the first successful sync if the backfill has not been pushed yet.
+      } else if (!getResponse.ok) {
+        await markGitHubOutbox(env, valid.map(({ record }) => record), "pending", `github_get_${getResponse.status}`);
+        console.warn("GitHub book metadata read failed", getResponse.status);
+        return;
+      } else {
+        const file = await getResponse.json();
+        if (!file.content || file.encoding !== "base64" || Number(file.size || 0) > 900000) {
+          await markGitHubOutbox(env, valid.map(({ record }) => record), "pending", "github_file_unavailable_or_too_large");
+          console.warn("GitHub book metadata file cannot be read safely");
+          return;
+        }
+        content = decodeBase64Utf8(file.content);
+        sha = file.sha;
+      }
+
+      const parsed = parseCsvRows(content.replace(/^\uFEFF/u, ""));
+      const header = parsed.shift() || [];
+      if (header.length < 3 || header[0] !== "author" || header[1] !== "title" || header[2] !== "link") {
+        await markGitHubOutbox(env, valid.map(({ record }) => record), "pending", "github_csv_header_mismatch");
+        console.warn("GitHub book metadata header does not match expected format");
+        return;
+      }
+      const makeKey = (book) => JSON.stringify([book.author, book.title, book.link]);
+      const existing = new Set(parsed.filter((row) => row.length >= 3).map((row) => makeKey({ author: row[0], title: row[1], link: row[2] })));
+      const additions = [];
+      for (const entry of valid) {
+        const key = makeKey(entry.book);
+        if (!existing.has(key)) {
+          additions.push(entry.book);
+          existing.add(key);
+        }
+      }
+
+      if (additions.length) {
+        const updatedContent = `${content}${content.endsWith("\n") ? "" : "\n"}${additions.map((book) => csvRow([book.author, book.title, book.link])).join("\n")}\n`;
+        const body = { message: `Sync ${additions.length} Telegram book metadata record(s) [skip ci]`, content: encodeBase64Utf8(updatedContent), branch: GITHUB_BOOKS_BRANCH };
+        if (sha) body.sha = sha;
+        const putResponse = await fetch(GITHUB_BOOKS_API, { method: "PUT", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        if ((putResponse.status === 409 || putResponse.status === 422) && batchNumber < 9) continue;
+        if (!putResponse.ok) {
+          await markGitHubOutbox(env, valid.map(({ record }) => record), "pending", `github_put_${putResponse.status}`);
+          console.warn("GitHub book metadata write failed", putResponse.status);
+          return;
+        }
+      }
+
+      await markGitHubOutbox(env, valid.map(({ record }) => record), "synced");
+    } catch (error) {
+      if (pending.length) {
+        try {
+          const retryable = pending.filter((record) => record.title && String(record.title).length <= 160 && String(record.author || "").length <= 100);
+          if (retryable.length) await markGitHubOutbox(env, retryable, "pending", "github_sync_error");
+        } catch {
+          // Keep the original failure out of user-facing responses and retry on the next cron.
+        }
+      }
+      console.warn("GitHub book metadata sync failed", error?.message || "unknown error");
+      return;
+    }
+  }
 }
 
 async function importNewCatalogRecords(env, post, records, rawText) {
@@ -1420,7 +1612,7 @@ async function handleCallback(env, query) {
 
 export default {
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(Promise.all([ensureWebhook(env), cleanupDue(env), sendMorningGreetings(env), pruneWebhookUpdates(env)]));
+    ctx.waitUntil(Promise.all([ensureWebhook(env), cleanupDue(env), sendMorningGreetings(env), pruneWebhookUpdates(env), syncPendingGitHub(env)]));
   },
 
   async fetch(request, env, ctx) {

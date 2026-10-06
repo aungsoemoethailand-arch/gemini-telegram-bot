@@ -139,7 +139,9 @@ returns the original review text from the matching review detail page, together 
 
 Private-channel message links work for channel members. Text posts are indexed as soon as Telegram delivers the update, normally within a few seconds. CSV documents uploaded to the channel are downloaded and imported automatically. The committed seed CSV is loaded during startup, so these books are searchable immediately after the bot starts.
 
-The current GitHub Actions runner has temporary storage. After each new channel post or CSV import, the bot commits `book_catalog.db` to this repository with `[skip ci]`, so the next runner checkout restores the complete catalog before startup. The workflow has `contents: write` permission for this backup. Because this repository is public, the database contents—including channel metadata, links, and stored raw text—are publicly visible by design.
+The Cloudflare Worker stores ingested records in D1. Its GitHub mirror is `data/telegram_books.csv` and contains only `author,title,link`; it must not contain raw post text, chat IDs, or message IDs. Since this repository is public, those three fields are publicly visible. To enable automatic mirroring, apply migration `0002_github_sync_outbox.sql` and configure the Worker secret `GITHUB_SYNC_TOKEN` using a fine-grained token restricted to this repository with `Contents: Read and write`. Pending updates are retried by the existing hourly scheduled Worker event.
+
+The GitHub Actions bot source also contains a local SQLite backup helper, but the current workflow does not call it. Do not rely on `book_catalog.db` being committed as a backup.
 
 Multiple books can be posted as CSV in one message:
 

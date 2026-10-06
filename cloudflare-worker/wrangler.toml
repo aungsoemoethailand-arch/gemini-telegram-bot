@@ -14,6 +14,8 @@ COMMAND_AUTO_DELETE_SECONDS = "30"
 AUTO_DELETE_MINUTES = "3"
 # Set secrets with: npx wrangler secret put TELEGRAM_BOT_TOKEN
 # Optional: npx wrangler secret put TELEGRAM_SECRET_TOKEN
+# GitHub mirror: use a repo-restricted fine-grained token with Contents read/write.
+# Add it with: npx wrangler secret put GITHUB_SYNC_TOKEN
 
 [triggers]
 crons = ["0 * * * *"]
