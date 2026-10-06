@@ -80,12 +80,12 @@ function extractNaturalSearchQuery(text) {
   const original = String(text || "").trim();
   if (!original || original.startsWith("/")) return null;
   const compact = normalize(original);
-  const looksLikeBookQuestion = /စာအုပ်|စာရင်း|ရှိလား|ရှိလဲ|ရှိသလား|ရှိပါသလား|ရှိမလား|ရှာပေး|ရှာပါ|ရှာချင်|လိုချင်|ဘယ်နှအုပ်|ဘယ်လောက်|အရေအတွက်|ဘယ်စာအုပ်|ရှိသလောက်|ပြပေး/.test(compact);
+  const looksLikeBookQuestion = /စာအုပ်|စာရင်း|epub|pdf|file|ဖိုင်|ရှိလား|ရှိလဲ|ရှိသလား|ရှိပါသလား|ရှိမလား|ရှိမရှိ|ရနိုင်မလား|ရမလား|ရှာပေး|ရှာပါ|ရှာချင်|လိုချင်|ဘယ်နှအုပ်|ဘယ်လောက်|အရေအတွက်|ဘယ်စာအုပ်|ရှိသလောက်|ပြပေး/.test(compact);
   if (!looksLikeBookQuestion) return null;
   let query = original
     .replace(/^\s*(?:ဆရာမကြီး|ဆရာကြီး|ဆရာမ|ဆရာ|ဒေါက်တာ|ဦး|ဒေါ်)\s*/gu, "")
-    .replace(/(?:စာအုပ်နာမည်|စာအုပ်အမည်|စာအုပ်တွေ|စာအုပ်များ|စာအုပ်|စာရင်း)/gu, " ")
-    .replace(/(?:ခင်ဗျား|ခင်ဗျ|ပါရှင့်|ပါရှင်|ရှင့်|ရှင်|ဗျ|နော်|ရှိလား|ရှိလဲ|ရှိသလား|ရှိပါသလား|ရှိမလား|ရှိသေးလား|ရှိတယ်လား|မရှိဘူးလား|ရှိသလောက်|ပါသလား|လား)/gu, " ")
+    .replace(/(?:စာအုပ်နာမည်|စာအုပ်အမည်|စာအုပ်လေးတွေ|စာအုပ်လေး|စာအုပ်တွေ|စာအုပ်များ|စာအုပ်|epub|pdf|file|ဖိုင်|လေး)/giu, " ")
+    .replace(/(?:ခင်ဗျား|ခင်ဗျ|ပါရှင့်|ပါရှင်|ရှင့်|ရှင်|ဗျ|နော်|ရှိမရှိ|ရနိုင်မလား|ရမလား|ရှိလား|ရှိလဲ|ရှိသလား|ရှိပါသလား|ရှိမလား|ရှိသေးလား|ရှိတယ်လား|မရှိဘူးလား|ရှိသလောက်|ပါသလား|လား)/gu, " ")
     .replace(/(?:ခင်ဗျား|ခင်ဗျ|ပါရှင့်|ပါရှင်|ရှင့်|ရှင်|ဗျ|နော်)/gu, " ")
     .replace(/(?:ရှာပေးပါ|ရှာပေး|ရှာပါ|ရှာချင်တယ်|ရှာချင်|ရှာပေးစေချင်|လိုချင်တယ်|လိုချင်|ပေးပါ|ပြပေးပါ|ပြပေး|ဖြေပေးပါ)/gu, " ")
     .replace(/(?:ဘယ်နှအုပ်|ဘယ်နှစ်အုပ်|ဘယ်လောက်|အရေအတွက်|ဘယ်စာအုပ်|ဘယ်ဟာ)/gu, " ")
@@ -561,7 +561,7 @@ async function searchExactBook(env, query) {
 
 function shouldUseSmartSearch(text, isGroup, botMentioned, replyTarget) {
   if (isGroup && !botMentioned && replyTarget?.from?.is_bot !== true) return false;
-  return /စာအုပ်|စာရေးသူ|စာရေးတဲ့|review|အညွှန်း|ရှိ|ရှာ|ဖတ်|ရေးတဲ့|ရေးသော|ဘယ်|လိုချင်/iu.test(String(text || ""));
+  return /စာအုပ်|စာရေးသူ|စာရေးတဲ့|review|အညွှန်း|epub|pdf|file|ဖိုင်|ရှိ|ရှာ|ဖတ်|ရေးတဲ့|ရေးသော|ဘယ်|လိုချင်/iu.test(String(text || ""));
 }
 
 async function interpretCatalogQuery(env, text) {
@@ -571,21 +571,31 @@ async function interpretCatalogQuery(env, text) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4500);
   try {
-    const response = await fetch(endpoint, {
+    const requestBody = {
+      model,
+      temperature: 0,
+      max_tokens: 180,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: "You are a strict Telegram book catalog query parser. Do not answer the user. Return JSON only with intent (books, reviews, none), query, author, title, confidence. Understand Burmese honorifics, polite endings, spacing, ebook/file wording, and phrases such as 'written by'. Remove words like book, ebook, file, review, please search, available, how many. Never invent names. For ordinary chat use intent none." },
+        { role: "user", content: String(text || "").slice(0, 500) },
+      ],
+    };
+    let response = await fetch(endpoint, {
       method: "POST",
       signal: controller.signal,
       headers: { "content-type": "application/json", authorization: `Bearer ${env.AI_API_KEY}` },
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        max_tokens: 180,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: "You are a strict Telegram book catalog query parser. Do not answer the user. Return JSON only with intent (books, reviews, none), query, author, title, confidence. Understand Burmese honorifics, polite endings, spacing, and phrases such as 'written by'. Remove words like book, review, please search, available, how many. Never invent names. For ordinary chat use intent none." },
-          { role: "user", content: String(text || "").slice(0, 500) },
-        ],
-      }),
+      body: JSON.stringify(requestBody),
     });
+    if (!response.ok) {
+      delete requestBody.response_format;
+      response = await fetch(endpoint, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "content-type": "application/json", authorization: `Bearer ${env.AI_API_KEY}` },
+        body: JSON.stringify(requestBody),
+      });
+    }
     if (!response.ok) return null;
     const payload = await response.json();
     const content = payload?.choices?.[0]?.message?.content;
