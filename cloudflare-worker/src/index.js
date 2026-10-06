@@ -1219,7 +1219,6 @@ async function handleMessage(env, message) {
         }
       }
     }
-    if (isGroup && !botMentioned) return null;
     return sendSearch(env, message.chat.id, natural.query, cleanup, false, { user: message.from, chatType: message.chat?.type }, naturalRows);
   }
   if (isGroup && !botMentioned) {
