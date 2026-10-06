@@ -865,7 +865,9 @@ async function sendReviews(env, chatId, query, reviews, cleanup = {}) {
 }
 
 async function catalogDeleteAllowed(env, message) {
-  return message.chat?.type === "private" && await isBotAdmin(env, message.from);
+  if (message.chat?.type === "private") return await isBotAdmin(env, message.from);
+  if (isGroupMessage(message)) return await isAuthorizedGroupAdmin(env, message);
+  return false;
 }
 
 async function findDeleteBooks(env, query = "") {
@@ -919,7 +921,7 @@ function deleteQueryFromReply(message) {
 }
 
 async function handleDeleteCommand(env, message, query, reply) {
-  if (!(await catalogDeleteAllowed(env, message))) return reply("စာအုပ်ဖျက်တာကို owner သို့မဟုတ် bot admin က private DM မှာပဲ သုံးနိုင်ပါတယ်ရှင်။");
+  if (!(await catalogDeleteAllowed(env, message))) return reply("စာအုပ်ဖျက်တာကို owner၊ bot admin ဒါမှမဟုတ် group admin ကပဲ သုံးနိုင်ပါတယ်ရှင်။");
   const targetQuery = query || deleteQueryFromReply(message);
   const books = await findDeleteBooks(env, targetQuery);
   if (!targetQuery) return sendDeleteCandidates(env, message, books);
@@ -1503,7 +1505,9 @@ async function handleCallback(env, query) {
     const session = await env.DB.prepare("SELECT token,requester_id,chat_id,book_id FROM delete_sessions WHERE token=? AND created_at>? ")
       .bind(token, Math.floor(Date.now() / 1000) - 3600).first();
     if (!session) return sendMessage(env, message.chat.id, "ဒီဖျက်ရန် button သက်တမ်းကုန်သွားပါပြီရှင်။ စာအုပ်ကို ပြန်ရွေးပေးပါနော်။");
-    if (String(session.requester_id) !== String(query.from?.id) || String(session.chat_id) !== String(message.chat.id)) {
+    const callbackAdmin = await catalogDeleteAllowed(env, { chat: message.chat, from: query.from });
+    const sameRequester = String(session.requester_id) === String(query.from?.id);
+    if (String(session.chat_id) !== String(message.chat.id) || (!sameRequester && !callbackAdmin)) {
       return sendMessage(env, message.chat.id, "ဒီစာအုပ်ဖျက်ရန် button ကို ရွေးထားတဲ့ admin ပဲ ဆက်လုပ်နိုင်ပါတယ်ရှင်။");
     }
     const book = await env.DB.prepare("SELECT id,author,title FROM books WHERE id=?").bind(session.book_id).first();
