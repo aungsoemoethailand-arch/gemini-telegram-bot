@@ -17,7 +17,6 @@ const SEARCH_INTROS = [
 const lastSearchIntro = new Map();
 const lastNoResult = new Map();
 const lastPdfNote = new Map();
-const lastPaginationNotice = new Map();
 const chatWriteCache = new Map();
 const userWriteCache = new Map();
 let botIdentityCache = null;
@@ -74,22 +73,6 @@ function nextPdfNote(chatId) {
   return PDF_NOTES[index];
 }
 
-const PAGINATION_OWNER_NOTICES = [
-  "ဒီစာအုပ်စာရင်းကို အရင်ရှာထားတဲ့သူကပဲ စာမျက်နှာကျော်ကြည့်လို့ရတာပါရှင်။ ကိုယ်တိုင်လည်း စာရေးသူ ဒါမှမဟုတ် စာအုပ်နာမည်နဲ့ ရှာကြည့်ပေးပါနော်။",
-  "အောက်က ခလုတ်လေးက ရှာထားတဲ့သူအတွက် သီးသန့်ပါရှင်။ မိတ်ဆွေက စာအုပ်နာမည်လေးနဲ့ ကိုယ်တိုင်ရှာလိုက်ရင် ချက်ချင်းကြည့်လို့ရပါတယ်နော်။",
-  "ဒီရှာဖွေမှုကို အခြားသူက စထားတာလေးမို့ ဒီ button ကို မိတ်ဆွေဘက်က ကျော်လို့မရသေးပါဘူးရှင်။ ကိုယ်ရှာချင်တဲ့ စာအုပ်နာမည်လေး ပို့ပေးပါနော်။",
-  "မိတ်ဆွေကိုလည်း ရှာပေးချင်ပါတယ်ရှင်။ ဒါပေမယ့် ဒီစာရင်းက ရှာထားတဲ့သူနဲ့ပဲ ချိတ်ထားတာမို့ ကိုယ်တိုင် စာအုပ်နာမည်နဲ့ ထပ်ရှာပေးပါနော်။",
-];
-
-function nextPaginationOwnerNotice(chatId) {
-  const key = String(chatId);
-  const previous = lastPaginationNotice.get(key);
-  const choices = PAGINATION_OWNER_NOTICES.map((_, index) => index).filter((index) => index !== previous);
-  const index = choices[Math.floor(Math.random() * choices.length)] ?? 0;
-  lastPaginationNotice.set(key, index);
-  if (lastPaginationNotice.size > 500) lastPaginationNotice.delete(lastPaginationNotice.keys().next().value);
-  return PAGINATION_OWNER_NOTICES[index];
-}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -765,7 +748,7 @@ async function sendSearch(env, chatId, query, cleanup = {}, exact = false, speak
   const token = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
   const mention = speaker?.chatType && speaker.chatType !== "private" ? userMention(speaker.user) : "";
   const introIndex = nextSearchIntro(chatId);
-  const storedQuery = JSON.stringify({ query, exact, mention, introIndex, formatRequest, ownerId: speaker?.user?.id || null });
+  const storedQuery = JSON.stringify({ query, exact, mention, introIndex, formatRequest });
   await env.DB.prepare("INSERT OR REPLACE INTO search_sessions(token,query,created_at) VALUES(?,?,?)")
     .bind(token, storedQuery, Math.floor(Date.now() / 1000)).run();
   return sendSearchPage(env, chatId, query, 0, cleanup, exact, token, null, mention, introIndex, prefetchedRows, formatRequest);
@@ -1391,7 +1374,6 @@ async function handleCallback(env, query) {
   if (action === "help_stats") return handleCommand(env, { chat: message.chat, text: "/stats" });
   const searchMatch = String(action || "").match(/^search:([a-z0-9]+):(\d+)$/);
   if (searchMatch) {
-    const callbackUser = query.from;
     const session = await env.DB.prepare("SELECT query FROM search_sessions WHERE token=? AND created_at>? ").bind(searchMatch[1], Math.floor(Date.now() / 1000) - 86400).first();
     if (!session) return sendMessage(env, message.chat.id, "ဒီရှာဖွေမှု button သက်တမ်းကုန်သွားပါပြီ။ ပြန်ရှာပါ။");
     const stored = String(session.query || "");
@@ -1400,7 +1382,6 @@ async function handleCallback(env, query) {
     let mention = "";
     let introIndex = 0;
     let formatRequest = "";
-    let ownerId = null;
     try {
       const parsed = JSON.parse(stored);
       query = String(parsed.query || "");
@@ -1408,14 +1389,9 @@ async function handleCallback(env, query) {
       mention = String(parsed.mention || "");
       introIndex = Number(parsed.introIndex) || 0;
       formatRequest = String(parsed.formatRequest || "");
-      ownerId = parsed.ownerId ? String(parsed.ownerId) : null;
     } catch {
       exact = stored.startsWith("__exact__");
       query = stored.replace(/^__(?:exact|fuzzy)__/, "");
-    }
-    if (message.chat?.type !== "private" && ownerId && String(callbackUser?.id || "") !== ownerId) {
-      const clicker = userMention(callbackUser) || "မိတ်ဆွေ";
-      return sendMessage(env, message.chat.id, `${clicker} ရေ၊ ${nextPaginationOwnerNotice(message.chat.id)}`, { __deleteAfterSeconds: 5 });
     }
     return sendSearchPage(env, message.chat.id, query, Number(searchMatch[2]), {}, exact, searchMatch[1], message.message_id, mention, introIndex, null, formatRequest);
   }
