@@ -51,6 +51,25 @@ function normalize(value) {
     .replace(/[\s\-–—_.,၊။:;!?()[\]{}"'`/\\|+*=<>၊။၊]+/gu, "");
 }
 
+function extractNaturalSearchQuery(text) {
+  const original = String(text || "").trim();
+  if (!original || original.startsWith("/")) return null;
+  const compact = normalize(original);
+  const looksLikeBookQuestion = /စာအုပ်|စာရင်း|ရှိလား|ရှိသလား|ရှိပါသလား|ရှိမလား|ရှာပေး|ရှာပါ|ရှာချင်|လိုချင်|ဘယ်နှအုပ်|ဘယ်စာအုပ်/.test(compact);
+  if (!looksLikeBookQuestion) return null;
+  let query = original
+    .replace(/(?:စာအုပ်နာမည်|စာအုပ်အမည်|စာအုပ်တွေ|စာအုပ်များ|စာအုပ်|စာရင်း)/gu, " ")
+    .replace(/(?:ရှိလား|ရှိသလား|ရှိပါသလား|ရှိမလား|ရှိသေးလား|ရှိတယ်လား|မရှိဘူးလား|ပါသလား|လား|နော်|ပါရှင်)/gu, " ")
+    .replace(/(?:ရှာပေးပါ|ရှာပေး|ရှာပါ|ရှာချင်တယ်|ရှာချင်|ရှာပေးစေချင်|လိုချင်တယ်|လိုချင်|ပေးပါ)/gu, " ")
+    .replace(/(?:ဘယ်နှအုပ်|ဘယ်နှစ်အုပ်|ဘယ်စာအုပ်|ဘယ်ဟာ)/gu, " ")
+    .replace(/(?:ရဲ့|၏|သည်|ကော|ကို|အကြောင်း)/gu, " ")
+    .replace(/[၊။!?၊,:;()\[\]{}"'`]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!query || query.length < 2) return null;
+  return { query, compact: normalize(query) };
+}
+
 const REVIEW_SITE_BASE = "https://whispermmepub.github.io/Review/";
 
 function stripHtml(html) {
@@ -1081,6 +1100,12 @@ async function handleMessage(env, message) {
   }
   if (isGroup && replyTarget?.from && !replyTarget.from.is_bot && !botMentioned) return;
   const cleanup = isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {};
+  const natural = extractNaturalSearchQuery(text);
+  if (natural) {
+    const naturalRows = await searchBooks(env, natural.query);
+    if (!naturalRows.length && isGroup && !botMentioned) return null;
+    return sendSearch(env, message.chat.id, natural.query, cleanup, false, { user: message.from, chatType: message.chat?.type }, naturalRows);
+  }
   if (isGroup && !botMentioned) {
     // Do not fuzzy-search every ordinary group message. The original bot
     // only searched an exact author/title in this fast path, and stayed
