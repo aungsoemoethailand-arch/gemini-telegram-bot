@@ -6,7 +6,7 @@ compatibility_date = "2026-10-03"
 WORKER_URL = "https://gemini-telegram-webhook.aungsoemoe-thailand.workers.dev"
 ENABLE_WEBHOOK = "true"
 ADMIN_TELEGRAM_ID = ""
-AUTO_DELETE_ENABLED = "true"
+AUTO_DELETE_ENABLED = "false"
 COMMAND_AUTO_DELETE_SECONDS = "30"
 AUTO_DELETE_MINUTES = "3"
 # Set secrets with: npx wrangler secret put TELEGRAM_BOT_TOKEN
