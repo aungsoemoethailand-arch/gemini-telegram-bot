@@ -545,18 +545,77 @@ async function saveRecords(env, chatId, messageId, records, rawText) {
   if (statements.length) await env.DB.batch(statements);
 }
 
+const BOOK_ANNOUNCEMENTS = [
+  "📚 <b>Whisper Of Words Channel မှာ စာအုပ်အသစ် ရရှိပါပြီရှင်။</b>\n\n✍️ စာရေးသူ: <b>{author}</b>\n📖 စာအုပ်: <b>{title}</b>\n\nအောက်ကခလုတ်လေးကနေ ဖတ်ရှုနိုင်ပါတယ်နော်။",
+  "🌟 စာဖတ်သူတို့အတွက် သတင်းကောင်းလေးပါရှင်။\nWhisper Of Words Channel မှာ စာအုပ်အသစ်တစ်အုပ် ထပ်ရောက်လာပါပြီ။\n\nစာရေးသူ — <b>{author}</b>\nစာအုပ်နာမည် — <b>{title}</b>\n\nလင့်လေးကို အောက်မှာ ထည့်ပေးထားပါတယ်နော်။",
+  "📖 စာအုပ်အသစ်လေး ရောက်လာပါပြီရှင်။\n\n<b>{title}</b> — <i>{author}</i>\n\nစိတ်ဝင်စားရင် အောက်က <b>စာအုပ်လင့်</b> လေးကို နှိပ်ပြီး ဖွင့်ကြည့်လို့ရပါတယ်နော်။",
+  "✨ Whisper Of Words Channel ရဲ့ အသစ်ရောက်စာအုပ်လေးကို မိတ်ဆက်ပေးပါရစေရှင်။\n\n✍️ <b>{author}</b> ရေးသားတဲ့\n📚 <b>{title}</b> ပါနော်။\n\nဖတ်ချင်ရင် အောက်ကခလုတ်လေးကို နှိပ်လိုက်ပါရှင်။",
+  "အသစ်ထပ်တိုးလာတဲ့ စာအုပ်လေးရှိပါတယ်ရှင် 📚\n\nစာရေးသူ: <b>{author}</b>\nစာအုပ်အမည်: <b>{title}</b>\n\nစာအုပ်လင့်ကို အောက်မှာ ချန်ထားပေးပါတယ်နော်။",
+  "ဒီနေ့အတွက် စာအုပ်သတင်းကောင်းလေးတစ်ခု ယူလာပေးပါတယ်ရှင် 🌼\n\n<b>{title}</b>\nစာရေးသူ — <b>{author}</b>\n\nအောက်က button လေးကနေ တိုက်ရိုက်ကြည့်နိုင်ပါတယ်နော်။",
+  "📣 စာအုပ်အသစ် အသိပေးချက်လေးပါရှင်။\nWhisper Of Words Channel မှာ <b>{author}</b> ရဲ့ <b>{title}</b> ရရှိနေပါပြီ။\n\nဖတ်ရှုရန် အောက်က link လေးကို နှိပ်ပေးပါနော်။",
+  "စာအုပ်ကောင်းလေးတစ်အုပ် ထပ်ရောက်လာပါပြီနော် 📚✨\n\n<b>{title}</b> — {author}\n\nမိတ်ဆွေတို့ ဖတ်ရှုလို့ရအောင် စာအုပ်လင့် button လေး ထည့်ပေးထားပါတယ်ရှင်။",
+];
+const lastBookAnnouncement = new Map();
+
+function announcementText(record) {
+  const key = `${record.author || ""}|${record.title || ""}`;
+  const previous = lastBookAnnouncement.get(key);
+  const choices = BOOK_ANNOUNCEMENTS.map((_, index) => index).filter((index) => index !== previous);
+  const index = choices[Math.floor(Math.random() * choices.length)] ?? 0;
+  lastBookAnnouncement.set(key, index);
+  if (lastBookAnnouncement.size > 500) lastBookAnnouncement.delete(lastBookAnnouncement.keys().next().value);
+  return BOOK_ANNOUNCEMENTS[index]
+    .replaceAll("{author}", escapeHtml(record.author || "မသိရသေးပါ"))
+    .replaceAll("{title}", escapeHtml(record.title || "ခေါင်းစဉ်မရှိသေးပါ"));
+}
+
+async function broadcastNewBook(env, record) {
+  if (!record?.author && !record?.title) return;
+  const [users, groups] = await Promise.all([
+    env.DB.prepare("SELECT user_id FROM known_users").all(),
+    env.DB.prepare("SELECT chat_id FROM connected_chats WHERE chat_type IN ('group','supergroup')").all(),
+  ]);
+  const recipients = [...new Set([
+    ...(users.results || []).map((row) => String(row.user_id)),
+    ...(groups.results || []).map((row) => String(row.chat_id)),
+  ])];
+  if (!recipients.length) return;
+  const link = record.link || "";
+  const extra = link ? { reply_markup: { inline_keyboard: [[{ text: "📖 စာအုပ်လင့် ဖွင့်ရန်", url: link }]] } } : {};
+  const text = announcementText(record);
+  for (let start = 0; start < recipients.length; start += 20) {
+    await Promise.allSettled(recipients.slice(start, start + 20).map((chatId) => telegram(env, "sendMessage", {
+      chat_id: chatId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...extra,
+    })));
+    if (start + 20 < recipients.length) await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+}
+
+async function importNewCatalogRecords(env, post, records, rawText) {
+  const existing = await env.DB.prepare("SELECT record_no FROM books WHERE chat_id=? AND message_id=?").bind(post.chat.id, post.message_id).all();
+  const oldRecordNumbers = new Set((existing.results || []).map((row) => Number(row.record_no)));
+  await saveRecords(env, post.chat.id, post.message_id, records, rawText);
+  const fresh = records.filter((record, index) => !oldRecordNumbers.has(index) && (record.author || record.title));
+  for (const record of fresh) await broadcastNewBook(env, record);
+}
+
 async function importChannelPost(env, post) {
   const text = post.text || post.caption || "";
   if (post.document?.file_name?.toLowerCase().endsWith(".csv")) {
     const file = await telegram(env, "getFile", { file_id: post.document.file_id });
     const response = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${file.result.file_path}`);
     const csv = await response.text();
-    await saveRecords(env, post.chat.id, post.message_id, extractRecords(csv), csv);
+    await importNewCatalogRecords(env, post, extractRecords(csv, messageLink(post.chat.id, post.message_id)), csv);
     return;
   }
   if (text) {
     const review = extractHashtagReview(text, messageLink(post.chat.id, post.message_id));
-    await saveRecords(env, post.chat.id, post.message_id, review ? [review] : extractRecords(text, messageLink(post.chat.id, post.message_id)), text);
+    if (review) await saveRecords(env, post.chat.id, post.message_id, [review], text);
+    else await importNewCatalogRecords(env, post, extractRecords(text, messageLink(post.chat.id, post.message_id)), text);
   }
 }
 
