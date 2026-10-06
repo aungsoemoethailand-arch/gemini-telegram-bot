@@ -19,6 +19,7 @@ const lastNoResult = new Map();
 const lastPdfNote = new Map();
 const chatWriteCache = new Map();
 const userWriteCache = new Map();
+const searchThrottle = new Map();
 let botIdentityCache = null;
 
 function nextSearchIntro(chatId) {
@@ -191,6 +192,20 @@ function isGroupChat(chat) {
 
 function autoDeleteEnabled(env) {
   return env.AUTO_DELETE_ENABLED !== "false" && env.AUTO_DELETE_ENABLED !== "0";
+}
+
+function allowCatalogSearch(message) {
+  const key = `${String(message?.chat?.id || "unknown")}:${String(message?.from?.id || "unknown")}`;
+  const now = Date.now();
+  const recent = (searchThrottle.get(key) || []).filter((timestamp) => now - timestamp < 10000);
+  if (recent.length >= 4) {
+    searchThrottle.set(key, recent);
+    return false;
+  }
+  recent.push(now);
+  searchThrottle.set(key, recent);
+  if (searchThrottle.size > 2000) searchThrottle.delete(searchThrottle.keys().next().value);
+  return true;
 }
 
 function morningGreetingEnabled(env) {
@@ -1255,6 +1270,7 @@ async function handleCommand(env, message) {
     if (await moderateMember(env, message, command.slice(1), args)) return null;
   }
   if (command === "/search" || command === "/find") {
+    if (!allowCatalogSearch(message)) return null;
     return query ? sendSearch(env, chatId, query, cleanup, false, { user: message.from, chatType: message.chat?.type }) : reply("သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
   }
   if (command === "/connects") {
@@ -1269,19 +1285,6 @@ async function handleCommand(env, message) {
       if (group.link) buttons.push([{ text: `🔗 ${String(group.title).slice(0, 55)}`, url: group.link }]);
     });
     return reply(lines.join("\n"), buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {});
-  }
-  if (command === "/ask") {
-    if (!query) return reply("သုံးပုံ: /ask စာအုပ်နာမည်");
-    const interpreted = extractNaturalSearchQuery(query);
-    let reviewQuery = interpreted?.query || query;
-    let local = await localReviewMatches(env, reviewQuery);
-    if (!local.length && env.AI_API_KEY) {
-      const ai = await interpretCatalogQuery(env, query);
-      if (ai?.intent === "reviews" && ai.confidence >= 0.55) reviewQuery = ai.query || [ai.author, ai.title].filter(Boolean).join(" ") || reviewQuery;
-      local = await localReviewMatches(env, reviewQuery);
-    }
-    const reviews = local.length ? local : await reviewMatches(reviewQuery);
-    return sendReviews(env, chatId, reviewQuery, reviews, cleanup);
   }
   if (command === "/author") return handleCommand(env, { ...message, text: "/authors" });
   if (command === "/myid") {
@@ -1335,62 +1338,22 @@ async function handleMessage(env, message) {
   const cleanup = isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {};
   const natural = extractNaturalSearchQuery(text);
   if (natural) {
+    if (!allowCatalogSearch(message)) return null;
     const naturalRows = await searchBooks(env, natural.query);
     if (naturalRows.length) return sendSearch(env, message.chat.id, natural.query, cleanup, false, { user: message.from, chatType: message.chat?.type }, naturalRows, natural.requestedFormat);
-    if (shouldUseSmartSearch(text, isGroup, botMentioned, replyTarget)) {
-      if (/(?:စာအုပ်|စာရေးသူ|စာရေးဆရာ|စာပေ).*(?:အကြောင်း|ပြောပြ|ရှင်းပြ)|(?:အကြောင်း|ပြောပြ|ရှင်းပြ).*(?:စာအုပ်|စာရေးသူ|စာရေးဆရာ|စာပေ)/iu.test(text)) {
-        return answerBookInfo(env, message.chat.id, natural.query, cleanup);
-      }
-      const interpreted = await interpretCatalogQuery(env, text);
-      if (interpreted?.confidence >= 0.55 && interpreted.intent === "books") {
-        const aiQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ");
-        if (aiQuery) {
-          const aiRows = await searchBooks(env, aiQuery);
-          if (aiRows.length) return sendSearch(env, message.chat.id, aiQuery, cleanup, false, { user: message.from, chatType: message.chat?.type }, aiRows, natural.requestedFormat);
-        }
-      } else if (interpreted?.confidence >= 0.55 && interpreted.intent === "info") {
-        const infoQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ") || natural.query;
-        if (infoQuery) return answerBookInfo(env, message.chat.id, infoQuery, cleanup);
-      } else if (interpreted?.confidence >= 0.55 && interpreted.intent === "reviews") {
-        const reviewQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ");
-        if (reviewQuery) {
-          const local = await localReviewMatches(env, reviewQuery);
-          const reviews = local.length ? local : await reviewMatches(reviewQuery);
-          return sendReviews(env, message.chat.id, reviewQuery, reviews, cleanup);
-        }
-      }
-    }
     return sendSearch(env, message.chat.id, natural.query, cleanup, false, { user: message.from, chatType: message.chat?.type }, naturalRows, natural.requestedFormat);
   }
   if (isGroup && !botMentioned) {
     // Do not fuzzy-search every ordinary group message. The original bot
     // only searched an exact author/title in this fast path, and stayed
     // silent when there was no exact catalog match.
+    if (!allowCatalogSearch(message)) return null;
     const exactRows = await searchExactBook(env, text);
     if (!exactRows.length) return null;
     return sendSearch(env, message.chat.id, text, cleanup, true, { user: message.from, chatType: message.chat?.type }, exactRows);
   }
-  if (shouldUseSmartSearch(text, isGroup, botMentioned, replyTarget)) {
-    const interpreted = await interpretCatalogQuery(env, text);
-    if (interpreted?.confidence >= 0.55 && interpreted.intent === "books") {
-      const aiQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ");
-      if (aiQuery) {
-        const aiRows = await searchBooks(env, aiQuery);
-        if (aiRows.length) return sendSearch(env, message.chat.id, aiQuery, cleanup, false, { user: message.from, chatType: message.chat?.type }, aiRows, /(?:pdf|ပီဒီအက်ဖ်)/iu.test(text) ? "pdf" : "");
-      }
-    } else if (interpreted?.confidence >= 0.55 && interpreted.intent === "info") {
-      const infoQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ") || text;
-      return answerBookInfo(env, message.chat.id, infoQuery, cleanup);
-    } else if (interpreted?.confidence >= 0.55 && interpreted.intent === "reviews") {
-      const reviewQuery = interpreted.query || [interpreted.author, interpreted.title].filter(Boolean).join(" ");
-      if (reviewQuery) {
-        const local = await localReviewMatches(env, reviewQuery);
-        const reviews = local.length ? local : await reviewMatches(reviewQuery);
-        return sendReviews(env, message.chat.id, reviewQuery, reviews, cleanup);
-      }
-    }
-    if (isGroup && !botMentioned) return null;
-  }
+  if (isGroup && !botMentioned) return null;
+  if (!allowCatalogSearch(message)) return null;
   return sendSearch(env, message.chat.id, text, cleanup, false, { user: message.from, chatType: message.chat?.type });
 }
 

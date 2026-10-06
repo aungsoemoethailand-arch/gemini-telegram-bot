@@ -9,6 +9,7 @@ ADMIN_TELEGRAM_ID = ""
 AUTO_DELETE_ENABLED = "false"
 ENABLE_MORNING_GREETING = "false"
 ENABLE_MEMBER_GREETING = "false"
+# Catalog search only: /ask, reviews, and external AI information mode are disabled in code.
 COMMAND_AUTO_DELETE_SECONDS = "30"
 AUTO_DELETE_MINUTES = "3"
 # Set secrets with: npx wrangler secret put TELEGRAM_BOT_TOKEN
