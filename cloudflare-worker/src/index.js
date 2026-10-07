@@ -1000,7 +1000,16 @@ async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId 
       lines.push(`\n<b>${safePage * pageSize + index + 1}. ${escapeHtml(row.author)}</b> — စာအုပ် ${row.count} အုပ်`);
     } else {
       lines.push(`\n<b>${safePage * pageSize + index + 1}. ${escapeHtml(row.title)}</b>${row.author ? `\nစာရေးသူ: ${escapeHtml(row.author)}` : ""}`);
-      if (row.link) buttons.push([{ text: `📖 ${String(row.title).slice(0, 52)}`, url: row.link }]);
+      if (row.link) {
+        try {
+          const bookUrl = new URL(String(row.link).trim());
+          if (bookUrl.protocol === "http:" || bookUrl.protocol === "https:") {
+            lines.push(`<a href="${escapeHtml(bookUrl.href)}">🔗 ဖတ်ရန်</a>`);
+          }
+        } catch {
+          // Skip malformed links from imported records.
+        }
+      }
     }
   });
   if (safePage > 0 || safePage < pageCount - 1) {
