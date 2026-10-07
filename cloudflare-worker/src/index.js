@@ -781,25 +781,103 @@ async function importChannelPost(env, post) {
   }
 }
 
+let authorAliasCache = null;
+
+async function loadAuthorAliasData(env, refresh = false) {
+  if (!refresh && authorAliasCache && authorAliasCache.expiresAt > Date.now()) return authorAliasCache.data;
+  const result = await env.DB.prepare("SELECT alias_key,alias_name,group_id,position FROM author_aliases ORDER BY group_id,position").all();
+  const rows = result.results || [];
+  const byKey = new Map();
+  const membersByGroup = new Map();
+  for (const row of rows) {
+    const groupId = String(row.group_id || "");
+    const aliasKey = String(row.alias_key || normalize(row.alias_name));
+    if (!groupId || !aliasKey) continue;
+    byKey.set(aliasKey, row);
+    if (!membersByGroup.has(groupId)) membersByGroup.set(groupId, []);
+    membersByGroup.get(groupId).push(row);
+  }
+  const displayByGroup = new Map();
+  for (const [groupId, members] of membersByGroup) {
+    members.sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+    displayByGroup.set(groupId, members.map((row) => row.alias_name).join("/"));
+  }
+  const data = { rows, byKey, membersByGroup, displayByGroup };
+  authorAliasCache = { expiresAt: Date.now() + 60_000, data };
+  return data;
+}
+
+function authorIdentity(author, aliases) {
+  const raw = String(author || "").trim();
+  const linked = aliases.byKey.get(normalize(raw));
+  if (!linked) return { key: `raw:${raw}`, display: raw };
+  const groupId = String(linked.group_id);
+  return { key: `group:${groupId}`, display: aliases.displayByGroup.get(groupId) || linked.alias_name || raw };
+}
+
+async function mergeAuthorAliases(env, inputNames) {
+  const aliases = await loadAuthorAliasData(env, true);
+  const merged = [];
+  const seen = new Set();
+  let groupId = "";
+  const add = (name) => {
+    const clean = String(name || "").trim().replace(/\s+/gu, " ");
+    const key = normalize(clean);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    merged.push({ aliasKey: key, aliasName: clean });
+  };
+  for (const name of inputNames) {
+    const key = normalize(name);
+    const existing = aliases.byKey.get(key);
+    if (!existing) {
+      add(name);
+      continue;
+    }
+    if (!groupId) groupId = String(existing.group_id);
+    const members = aliases.membersByGroup.get(String(existing.group_id)) || [existing];
+    for (const member of members) add(member.alias_name);
+  }
+  if (merged.length < 2) throw new Error("At least two distinct names are required");
+  if (merged.length > 100) throw new Error("Alias group is too large");
+  if (!groupId) groupId = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  await env.DB.batch(merged.map((item, position) => env.DB.prepare(
+    "INSERT INTO author_aliases(alias_key,alias_name,group_id,position,created_at) VALUES(?,?,?,?,?) ON CONFLICT(alias_key) DO UPDATE SET alias_name=excluded.alias_name,group_id=excluded.group_id,position=excluded.position"
+  ).bind(item.aliasKey, item.aliasName, groupId, position, createdAt)));
+  authorAliasCache = null;
+  return merged.map((item) => item.aliasName);
+}
+
 async function searchBooks(env, query) {
   const rows = await env.DB.prepare(
     "SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000"
   ).all();
   const needle = normalize(query);
   const parts = String(query || "").split(/\s+/).map(normalize).filter(Boolean);
+  const aliases = await loadAuthorAliasData(env);
+  const queryGroup = aliases.byKey.get(needle)?.group_id || "";
   return (rows.results || []).filter((row) => {
     if (isReviewRecord(row)) return false;
     const author = normalize(row.author);
     const title = normalize(row.title);
     const combined = `${author}${title}`;
-    return author.includes(needle) || title.includes(needle) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
+    const authorGroup = aliases.byKey.get(author)?.group_id || "";
+    return author.includes(needle) || title.includes(needle) || (queryGroup && authorGroup === queryGroup) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
   }).slice(0, MAX_BOOK_RESULTS);
 }
 
 async function searchExactBook(env, query) {
   const needle = normalize(query);
   const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
-  return (rows.results || []).filter((row) => !isReviewRecord(row) && (normalize(row.author) === needle || normalize(row.title) === needle)).slice(0, MAX_BOOK_RESULTS);
+  const aliases = await loadAuthorAliasData(env);
+  const queryGroup = aliases.byKey.get(needle)?.group_id || "";
+  return (rows.results || []).filter((row) => {
+    if (isReviewRecord(row)) return false;
+    const author = normalize(row.author);
+    const authorGroup = aliases.byKey.get(author)?.group_id || "";
+    return author === needle || normalize(row.title) === needle || (queryGroup && authorGroup === queryGroup);
+  }).slice(0, MAX_BOOK_RESULTS);
 }
 
 function shouldUseSmartSearch(text, isGroup, botMentioned, replyTarget) {
@@ -982,9 +1060,16 @@ async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId 
   let items;
   if (kind === "authors") {
     const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books WHERE author<>'' ORDER BY author LIMIT 2000").all();
+    const aliases = await loadAuthorAliasData(env);
     const counts = new Map();
-    for (const row of rows.results || []) if (!isReviewRecord(row)) counts.set(row.author, (counts.get(row.author) || 0) + 1);
-    items = [...counts.entries()].map(([author, count]) => ({ author, count }));
+    for (const row of rows.results || []) {
+      if (isReviewRecord(row)) continue;
+      const identity = authorIdentity(row.author, aliases);
+      const item = counts.get(identity.key) || { author: identity.display, count: 0 };
+      item.count += 1;
+      counts.set(identity.key, item);
+    }
+    items = [...counts.values()];
   } else {
     const rows = await env.DB.prepare("SELECT chat_id,title,author,link,raw_text FROM books WHERE title<>'' ORDER BY title LIMIT 2000").all();
     items = (rows.results || []).filter((row) => !isReviewRecord(row));
@@ -1455,6 +1540,20 @@ async function handleCommand(env, message) {
     await env.DB.prepare("INSERT OR REPLACE INTO bot_admins(user_id,username,added_by,created_at) VALUES(?,?,?,?)").bind(target, String(args[0] || "").replace(/^@/, ""), message.from.id, Math.floor(Date.now() / 1000)).run();
     return reply(`✅ Bot admin ထည့်ပြီးပါပြီ။\nUser: <code>${escapeHtml(target)}</code>`);
   }
+  if (command === "/merge") {
+    if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
+    const names = [...new Map(query.split("+").map((name) => name.trim().replace(/\s+/gu, " ")).filter(Boolean).map((name) => [normalize(name), name])).values()];
+    if (names.length < 2 || names.length > 10 || names.some((name) => name.length > 100)) {
+      return reply("သုံးပုံ: <code>/merge မင်းကျော်+ကျော်လှိုင်ဦး</code>\nနာမည်အသစ် ထပ်ထည့်ရန်: <code>/merge မင်းကျော်+ကျော်လှိုင်ဦး+ကိုကျော်</code>");
+    }
+    try {
+      const mergedNames = await mergeAuthorAliases(env, names);
+      return reply(`✅ <b>ကလောင်အမည်များကို ချိတ်ဆက်ပြီးပါပြီ</b>\nအုပ်စု: <b>${escapeHtml(mergedNames.join("/"))}</b>\nယခု အုပ်စုထဲရှိ မည်သည့်အမည်ဖြင့်မဆို ရှာလျှင် ဆက်စပ်စာအုပ်များကို ပြပေးပါမည်။`);
+    } catch (error) {
+      console.log("Author alias merge failed", error?.message || "unknown error");
+      return reply("ကလောင်အမည်များကို ချိတ်ဆက်ရာတွင် အမှားဖြစ်သွားပါတယ်။ ခဏကြာပြီး ပြန်စမ်းပါ၊ သို့မဟုတ် ပိုင်ရှင်အကောင့်မှ သုံးနေကြောင်း စစ်ဆေးပါ။");
+    }
+  }
   if (command === "/del" || command === "/delete") return handleDeleteCommand(env, message, query, reply);
   if (command === "/admins") {
     if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
@@ -1511,9 +1610,10 @@ async function handleCommand(env, message) {
     return catalogPage(env, chatId, "books", 0, cleanup);
   }
   if (command === "/stats") {
-    const rows = await env.DB.prepare("SELECT chat_id,author,raw_text FROM books").all();
+    const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books").all();
     const catalogRows = (rows.results || []).filter((row) => !isReviewRecord(row));
-    const authors = new Set(catalogRows.map((row) => String(row.author || "").trim()).filter(Boolean));
+    const aliases = await loadAuthorAliasData(env);
+    const authors = new Set(catalogRows.map((row) => authorIdentity(row.author, aliases).key).filter((key) => key !== "raw:"));
     return reply(`<b>📊 Catalog စာရင်းအခြေအနေ</b>\n\n📚 စာအုပ်စုစုပေါင်း: <b>${catalogRows.length}</b> အုပ်\n✍️ စာရေးသူစုစုပေါင်း: <b>${authors.size}</b> ဦး`);
   }
   return null;
