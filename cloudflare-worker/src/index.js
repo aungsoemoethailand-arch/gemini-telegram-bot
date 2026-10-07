@@ -497,7 +497,7 @@ async function ensureWebhook(env) {
   await telegram(env, "setWebhook", {
     url: env.WORKER_URL,
     secret_token: env.TELEGRAM_SECRET_TOKEN || undefined,
-    allowed_updates: ["message", "edited_message", "channel_post", "callback_query", "chat_member", "my_chat_member"],
+    allowed_updates: ["message", "edited_message", "channel_post", "callback_query", "inline_query", "chat_member", "my_chat_member"],
   });
 }
 
@@ -865,6 +865,64 @@ async function searchBooks(env, query) {
     const authorGroup = aliases.byKey.get(author)?.group_id || "";
     return author.includes(needle) || title.includes(needle) || (queryGroup && authorGroup === queryGroup) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
   }).slice(0, MAX_BOOK_RESULTS);
+}
+
+async function handleInlineQuery(env, inlineQuery) {
+  const inlineQueryId = String(inlineQuery?.id || "");
+  if (!inlineQueryId) return;
+  const query = String(inlineQuery.query || "").trim();
+  if (normalize(query).length < 2) {
+    return telegram(env, "answerInlineQuery", {
+      inline_query_id: inlineQueryId,
+      results: [],
+      cache_time: 0,
+      is_personal: true,
+    });
+  }
+
+  try {
+    const books = await searchBooks(env, query);
+    const results = books.slice(0, 20).map((book, index) => {
+      const title = String(book.title || "စာအုပ်").trim();
+      const author = String(book.author || "").trim();
+      const result = {
+        type: "article",
+        id: String(index + 1),
+        title: title.slice(0, 128),
+        description: author.slice(0, 128) || "စာရေးသူမသိ",
+        input_message_content: {
+          message_text: `📖 <b>${escapeHtml(title)}</b>\n✍️ ${escapeHtml(author || "စာရေးသူမသိ")}`,
+          parse_mode: "HTML",
+          disable_web_page_preview: true,
+        },
+      };
+      try {
+        const url = new URL(String(book.link || ""));
+        if (["http:", "https:"].includes(url.protocol)) {
+          result.reply_markup = { inline_keyboard: [[{ text: "📥 စာအုပ်ဖွင့်ရန်", url: url.toString() }]] };
+        }
+      } catch {}
+      return result;
+    });
+    return telegram(env, "answerInlineQuery", {
+      inline_query_id: inlineQueryId,
+      results,
+      cache_time: results.length ? 30 : 0,
+      is_personal: true,
+    });
+  } catch (error) {
+    console.error("Inline search failed", error?.message || "unknown error");
+    try {
+      return await telegram(env, "answerInlineQuery", {
+        inline_query_id: inlineQueryId,
+        results: [],
+        cache_time: 0,
+        is_personal: true,
+      });
+    } catch (answerError) {
+      console.error("Inline answer failed", answerError?.message || "unknown error");
+    }
+  }
 }
 
 async function searchExactBook(env, query) {
@@ -1527,6 +1585,16 @@ async function handleCommand(env, message) {
   const cleanup = isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {};
   const reply = (text, extra = {}) => sendMessage(env, chatId, text, { ...cleanup, ...extra });
   if (await handleGuardianCommand(env, message, command, args, reply)) return null;
+  if (command === "/refreshwebhook") {
+    if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို ပိုင်ရှင်က သီးသန့်စကားဝိုင်းကနေသာ အသုံးပြုနိုင်ပါတယ်။");
+    try {
+      await ensureWebhook(env);
+      return reply("✅ Webhook ကို အသစ်ပြင်ဆင်ပြီးပါပြီ။ အခု inline ရှာဖွေမှုကို သုံးနိုင်ပါပြီ။");
+    } catch (error) {
+      console.error("Webhook refresh failed", error?.message || "unknown error");
+      return reply("Webhook ကို အသစ်ပြင်ဆင်လို့ မရသေးပါ။ ခဏစောင့်ပြီး ပြန်စမ်းပါ။");
+    }
+  }
   if (command === "/start" || command === "/help") {
     return reply("<b>📚 စာအုပ်ရှာဖွေရေး Bot</b>\n\nအောက်က menu ကနေ ရွေးနိုင်ပါတယ်ရှင်။", { reply_markup: { inline_keyboard: [
       [{ text: "🔎 စာအုပ်ရှာမယ်", callback_data: "help_search" }, { text: "✍️ စာရေးသူများ", callback_data: "help_authors" }],
@@ -1733,7 +1801,9 @@ export default {
       if (env.TELEGRAM_SECRET_TOKEN && request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.TELEGRAM_SECRET_TOKEN) return new Response("Unauthorized", { status: 401 });
       const update = await request.json();
       if (!(await claimWebhookUpdate(env, update.update_id))) return new Response("OK");
-      if (update.channel_post) {
+      if (update.inline_query) {
+        ctx.waitUntil(handleInlineQuery(env, update.inline_query).catch((error) => console.error("Inline query handler failed", error?.message || "unknown error")));
+      } else if (update.channel_post) {
         ctx.waitUntil(rememberChat(env, update.channel_post.chat));
         ctx.waitUntil(importChannelPost(env, update.channel_post).catch((error) => console.error("Channel import failed", error?.message || "unknown error")));
       } else if (update.callback_query) {
