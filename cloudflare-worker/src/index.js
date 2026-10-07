@@ -981,7 +981,7 @@ async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId 
   const pageSize = 20;
   let items;
   if (kind === "authors") {
-    const rows = await env.DB.prepare("SELECT chat_id,author,raw_text FROM books WHERE author<>'' ORDER BY author LIMIT 2000").all();
+    const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books WHERE author<>'' ORDER BY author LIMIT 2000").all();
     const counts = new Map();
     for (const row of rows.results || []) if (!isReviewRecord(row)) counts.set(row.author, (counts.get(row.author) || 0) + 1);
     items = [...counts.entries()].map(([author, count]) => ({ author, count }));
