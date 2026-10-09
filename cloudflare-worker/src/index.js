@@ -640,26 +640,23 @@ async function sendBusinessBookResults(env, message, query, rows) {
 
 async function secretaryAutoReply(env, message) {
   if (!secretaryEnabled(env) || !message?.business_connection_id || !message?.chat?.id || !message?.text) return;
+  console.log("Secretary business message received", message.chat.id, String(message.text).slice(0, 120));
   const connection = await env.DB.prepare(
     "SELECT can_reply,is_enabled FROM business_connections WHERE connection_id=?"
   ).bind(String(message.business_connection_id)).first();
   if (connection && (!Number(connection.is_enabled) || !Number(connection.can_reply))) return;
   const text = String(message.text).trim();
-  const parsed = await interpretCatalogQuery(env, text);
   const natural = extractNaturalSearchQuery(text);
   const slashQuery = text.replace(/^\/(?:search|find)(?:@\w+)?\s*/iu, "").trim();
-  const query = String(parsed?.query || natural?.query || (slashQuery !== text ? slashQuery : "")).trim();
-  if (query && (parsed?.intent === "books" || parsed?.intent === "reviews" || parsed?.intent === "info" || natural || slashQuery !== text)) {
-    const rows = await searchBooks(env, query);
-    if (rows.length) return sendBusinessBookResults(env, message, query, rows);
-    if (parsed?.intent === "books" || natural || slashQuery !== text) {
-      return sendBusinessMessage(env, message, `${escapeHtml(query)} နဲ့ ကိုက်ညီတဲ့ စာအုပ်ကို catalog ထဲမှာ မတွေ့သေးပါဘူးရှင်။`);
-    }
+  const query = String(natural?.query || (slashQuery !== text ? slashQuery : text)).trim();
+  const rows = query.length >= 2 ? await searchBooks(env, query) : [];
+  if (rows.length) return sendBusinessBookResults(env, message, query, rows);
+  if (natural || slashQuery !== text) {
+    return sendBusinessMessage(env, message, `${escapeHtml(query)} နဲ့ ကိုက်ညီတဲ့ စာအုပ်ကို catalog ထဲမှာ မတွေ့သေးပါဘူးရှင်။`);
   }
   if (!env.AI_API_KEY) return sendBusinessMessage(env, message, "အခုတော့ စာပြန်ပေးတဲ့ AI service မရသေးပါဘူးရှင်။");
   const endpoint = env.AI_API_URL || "https://api.openai.com/v1/chat/completions";
-  const catalogRows = query ? await searchBooks(env, query) : [];
-  const catalogContext = catalogRows.slice(0, 8).map((row) => `${row.title || ""} — ${row.author || ""} — ${row.link || ""}`).join("\n");
+  const catalogContext = rows.slice(0, 8).map((row) => `${row.title || ""} — ${row.author || ""} — ${row.link || ""}`).join("\n");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12000);
   try {
