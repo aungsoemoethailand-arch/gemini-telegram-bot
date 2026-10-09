@@ -748,33 +748,51 @@ async function openAiSecretaryReply(env, text, catalogContext = "") {
   }
 }
 
-async function groqSecretaryReply(env, text, catalogContext = "") {
-  if (!env.GROQ_API_KEY) return "";
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
-  try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      signal: controller.signal,
-      headers: { "content-type": "application/json", authorization: `Bearer ${env.GROQ_API_KEY}` },
-      body: JSON.stringify({
-        model: env.GROQ_MODEL || "qwen/qwen3.8-27b",
-        temperature: 0.35,
-        max_tokens: 500,
-        messages: [
-          { role: "system", content: "You are a warm, concise Burmese-speaking secretary. Reply naturally and politely. Do not invent facts, prices, promises, or personal information. Return only the reply text." },
-          { role: "user", content: `${catalogContext ? `Known book catalog:\n${catalogContext}\n\n` : ""}Customer message:\n${String(text).slice(0, 4000)}` },
-        ],
-      }),
-    });
-    if (!response.ok) return "";
-    const payload = await response.json();
-    return String(payload?.choices?.[0]?.message?.content || "").trim().slice(0, 3500);
-  } catch {
-    return "";
-  } finally {
-    clearTimeout(timeout);
+function groqApiKeys(env) {
+  const keys = [env.GROQ_API_KEY];
+  if (env.GROQ_API_KEYS) {
+    try {
+      const parsed = JSON.parse(env.GROQ_API_KEYS);
+      if (Array.isArray(parsed)) keys.push(...parsed);
+    } catch {
+      keys.push(...String(env.GROQ_API_KEYS).split(/[\n,]/u));
+    }
   }
+  return [...new Set(keys.map((key) => String(key || "").trim()).filter(Boolean))];
+}
+async function groqSecretaryReply(env, text, catalogContext = "") {
+  const keys = groqApiKeys(env);
+  if (!keys.length) return "";
+  for (const key of keys) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+        body: JSON.stringify({
+          model: env.GROQ_MODEL || "qwen/qwen3.8-27b",
+          temperature: 0.35,
+          max_tokens: 500,
+          messages: [
+            { role: "system", content: "You are a warm, concise Burmese-speaking secretary. Reply naturally and politely. Do not invent facts, prices, promises, or personal information. Return only the reply text." },
+            { role: "user", content: `${catalogContext ? `Known book catalog:\n${catalogContext}\n\n` : ""}Customer message:\n${String(text).slice(0, 4000)}` },
+          ],
+        }),
+      });
+      if (response.ok) {
+        const payload = await response.json();
+        const answer = String(payload?.choices?.[0]?.message?.content || "").trim().slice(0, 3500);
+        if (answer) return answer;
+      }
+    } catch {
+      // Try the next permitted key, then continue to the other providers.
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  return "";
 }
 
 async function probeAiProvider(endpoint, key, model) {
