@@ -14,6 +14,8 @@ ENABLE_MORNING_GREETING = "false"
 ENABLE_MEMBER_GREETING = "false"
 # Secretary Mode starts in approval-only mode: drafts go to the owner first.
 SECRETARY_MODE_ENABLED = "true"
+SECRETARY_MIN_REPLY_INTERVAL_SECONDS = "12"
+SECRETARY_MAX_REPLIES_PER_HOUR = "20"
 # Catalog search only: /ask, reviews, and external AI information mode are disabled in code.
 COMMAND_AUTO_DELETE_SECONDS = "30"
 AUTO_DELETE_MINUTES = "3"

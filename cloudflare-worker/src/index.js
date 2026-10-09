@@ -636,6 +636,33 @@ async function sendBusinessTyping(env, message) {
   }
 }
 
+async function allowSecretaryReply(env, message) {
+  const connectionId = String(message.business_connection_id || "");
+  const chatId = Number(message.chat?.id || 0);
+  const now = Math.floor(Date.now() / 1000);
+  if (!connectionId || !chatId) return false;
+  const minimumInterval = Math.max(5, Number(env.SECRETARY_MIN_REPLY_INTERVAL_SECONDS || 12));
+  const hourlyLimit = Math.max(1, Number(env.SECRETARY_MAX_REPLIES_PER_HOUR || 20));
+  const row = await env.DB.prepare(
+    "SELECT window_started_at,last_replied_at,reply_count FROM secretary_rate_limits WHERE connection_id=? AND chat_id=?"
+  ).bind(connectionId, chatId).first();
+  let windowStarted = Number(row?.window_started_at || now);
+  let count = Number(row?.reply_count || 0);
+  if (now - windowStarted >= 3600) {
+    windowStarted = now;
+    count = 0;
+  }
+  if (row && now - Number(row.last_replied_at || 0) < minimumInterval) return false;
+  if (count >= hourlyLimit) return false;
+  await env.DB.prepare(
+    `INSERT INTO secretary_rate_limits(connection_id,chat_id,window_started_at,last_replied_at,reply_count)
+     VALUES(?,?,?,?,?)
+     ON CONFLICT(connection_id,chat_id) DO UPDATE SET
+       window_started_at=excluded.window_started_at,last_replied_at=excluded.last_replied_at,reply_count=excluded.reply_count`
+  ).bind(connectionId, chatId, windowStarted, now, count + 1).run();
+  return true;
+}
+
 const SECRETARY_FALLBACKS = {
   greeting: [
     "မင်္ဂလာပါရှင်။ စာပို့လာတာကို လက်ခံရရှိပါတယ်နော်။ ဘာကူညီပေးရမလဲရှင်။",
@@ -686,11 +713,13 @@ async function sendBusinessBookResults(env, message, query, rows) {
 
 async function secretaryAutoReply(env, message) {
   if (!secretaryEnabled(env) || !message?.business_connection_id || !message?.chat?.id || !message?.text) return;
+  if (message.from?.is_bot) return;
   console.log("Secretary business message received", message.chat.id, String(message.text).slice(0, 120));
   const connection = await env.DB.prepare(
     "SELECT can_reply,is_enabled FROM business_connections WHERE connection_id=?"
   ).bind(String(message.business_connection_id)).first();
   if (connection && (!Number(connection.is_enabled) || !Number(connection.can_reply))) return;
+  if (!(await allowSecretaryReply(env, message))) return;
   const text = String(message.text).trim();
   await sendBusinessTyping(env, message);
   const natural = extractNaturalSearchQuery(text);
