@@ -2147,6 +2147,16 @@ async function handleMessage(env, message) {
   }
   if (isGroup && replyTarget?.from && !replyTarget.from.is_bot && !botMentioned) return;
   const cleanup = { ...(isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {}), ...directMessageExtra(message) };
+  if (isGroup) {
+    // In groups, reply only when the whole message matches a catalog author/title.
+    // Ordinary conversation such as “စာအုပ်ရှိလား” must stay silent.
+    const groupNatural = extractNaturalSearchQuery(queryText);
+    const groupQuery = groupNatural?.query || queryText;
+    if (!groupQuery || !allowCatalogSearch(message)) return null;
+    const exactRows = await searchExactBook(env, groupQuery);
+    if (!exactRows.length) return null;
+    return sendSearch(env, message.chat.id, groupQuery, cleanup, true, { user: message.from, chatType: message.chat?.type }, exactRows, groupNatural?.requestedFormat || "");
+  }
   const natural = extractNaturalSearchQuery(queryText);
   if (natural) {
     if (!allowCatalogSearch(message)) return null;
@@ -2154,16 +2164,6 @@ async function handleMessage(env, message) {
     if (naturalRows.length) return sendSearch(env, message.chat.id, natural.query, cleanup, false, { user: message.from, chatType: message.chat?.type }, naturalRows, natural.requestedFormat);
     return sendSearch(env, message.chat.id, natural.query, cleanup, false, { user: message.from, chatType: message.chat?.type }, naturalRows, natural.requestedFormat);
   }
-  if (isGroup && !botMentioned) {
-    // Do not fuzzy-search every ordinary group message. The original bot
-    // only searched an exact author/title in this fast path, and stayed
-    // silent when there was no exact catalog match.
-    if (!allowCatalogSearch(message)) return null;
-    const exactRows = await searchExactBook(env, queryText);
-    if (!exactRows.length) return null;
-    return sendSearch(env, message.chat.id, queryText, cleanup, true, { user: message.from, chatType: message.chat?.type }, exactRows);
-  }
-  if (isGroup && !botMentioned) return null;
   if (!allowCatalogSearch(message)) return null;
   return sendSearch(env, message.chat.id, queryText, cleanup, false, { user: message.from, chatType: message.chat?.type });
 }
