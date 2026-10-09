@@ -497,7 +497,7 @@ async function ensureWebhook(env) {
   await telegram(env, "setWebhook", {
     url: env.WORKER_URL,
     secret_token: env.TELEGRAM_SECRET_TOKEN || undefined,
-    allowed_updates: ["message", "edited_message", "channel_post", "callback_query", "inline_query", "chat_member", "my_chat_member"],
+    allowed_updates: ["message", "edited_message", "channel_post", "callback_query", "inline_query", "chat_member", "my_chat_member", "business_connection", "business_message", "edited_business_message", "deleted_business_messages"],
   });
 }
 
@@ -514,6 +514,131 @@ async function sendMessage(env, chatId, text, extra = {}) {
     await queueDelete(env, chatId, result.result.message_id, __deleteAfterSeconds);
   }
   return result;
+}
+
+function secretaryEnabled(env) {
+  return env.SECRETARY_MODE_ENABLED === "true";
+}
+
+function secretaryOwnerId(env) {
+  return String(adminId(env) || "").trim();
+}
+
+async function saveBusinessConnection(env, connection) {
+  if (!connection?.id) return;
+  const rights = connection.rights || {};
+  await env.DB.prepare(
+    `INSERT INTO business_connections(connection_id,user_id,user_chat_id,can_reply,can_read_messages,is_enabled,updated_at)
+     VALUES(?,?,?,?,?,?,?)
+     ON CONFLICT(connection_id) DO UPDATE SET
+       user_id=excluded.user_id,user_chat_id=excluded.user_chat_id,
+       can_reply=excluded.can_reply,can_read_messages=excluded.can_read_messages,
+       is_enabled=excluded.is_enabled,updated_at=excluded.updated_at`
+  ).bind(
+    String(connection.id),
+    Number(connection.user?.id || 0),
+    Number(connection.user_chat_id || 0),
+    rights.can_reply ? 1 : 0,
+    rights.can_read_messages ? 1 : 0,
+    connection.is_enabled === false ? 0 : 1,
+    Math.floor(Date.now() / 1000),
+  ).run();
+}
+
+async function secretaryDraft(env, message) {
+  if (!secretaryEnabled(env) || !message?.business_connection_id || !message?.chat?.id || !message?.text) return;
+  const ownerId = secretaryOwnerId(env);
+  if (!ownerId) return;
+  const connection = await env.DB.prepare(
+    "SELECT can_reply,is_enabled FROM business_connections WHERE connection_id=?"
+  ).bind(String(message.business_connection_id)).first();
+  if (connection && (!Number(connection.is_enabled) || !Number(connection.can_reply))) return;
+  if (!connection) {
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO business_connections(connection_id,user_id,user_chat_id,can_reply,can_read_messages,is_enabled,updated_at)
+       VALUES(?,?,?,?,?,?,?)`
+    ).bind(String(message.business_connection_id), 0, 0, 1, 1, 1, Math.floor(Date.now() / 1000)).run();
+  }
+  const endpoint = env.AI_API_URL || "https://api.openai.com/v1/chat/completions";
+  if (!env.AI_API_KEY) return sendMessage(env, ownerId, "Secretary Mode အတွက် AI API key မရှိသေးပါ။");
+  const recent = await env.DB.prepare(
+    "SELECT original_text,draft_text FROM secretary_drafts WHERE connection_id=? AND chat_id=? AND status IN ('approved','pending') ORDER BY created_at DESC LIMIT 6"
+  ).bind(String(message.business_connection_id), Number(message.chat.id)).all();
+  const context = (recent.results || []).reverse().map((row) => `Customer: ${row.original_text}\nAssistant: ${row.draft_text}`).join("\n\n");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  let draft;
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "content-type": "application/json", authorization: `Bearer ${env.AI_API_KEY}` },
+      body: JSON.stringify({
+        model: env.AI_MODEL || "gemini-3.8-flash",
+        temperature: 0.35,
+        max_tokens: 500,
+        messages: [
+          { role: "system", content: "You are a careful Burmese-speaking secretary. Draft a concise, polite reply to the customer. Do not claim to be the account owner. Do not invent prices, promises, availability, or personal facts. If the message needs the owner's decision, say that the owner will follow up. Return only the reply text, without headings or quotation marks." },
+          { role: "user", content: `${context ? `Recent conversation:\n${context}\n\n` : ""}Customer message:\n${String(message.text).slice(0, 4000)}` },
+        ],
+      }),
+    });
+    if (!response.ok) throw new Error(`Secretary AI HTTP ${response.status}`);
+    const payload = await response.json();
+    draft = String(payload?.choices?.[0]?.message?.content || "").trim().slice(0, 3500);
+    if (!draft) throw new Error("empty secretary draft");
+  } catch (error) {
+    console.error("Secretary draft failed", error?.message || "unknown error");
+    return sendMessage(env, ownerId, "Secretary Mode က AI draft မရေးနိုင်သေးပါ။ ခဏကြာပြီး ပြန်စမ်းပါ။");
+  } finally {
+    clearTimeout(timeout);
+  }
+  const token = crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO secretary_drafts(token,connection_id,owner_id,chat_id,source_message_id,original_text,draft_text,status,created_at,expires_at)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`
+  ).bind(token, String(message.business_connection_id), Number(ownerId), Number(message.chat.id), Number(message.message_id), String(message.text).slice(0, 4000), draft, "pending", now, now + 86400).run();
+  return sendMessage(env, ownerId,
+    `<b>Secretary Mode — စာကြမ်းအသစ်</b>\n\n<b>Customer:</b> ${escapeHtml(message.text).slice(0, 3000)}\n\n<b>AI Draft:</b> ${escapeHtml(draft)}`,
+    { reply_markup: { inline_keyboard: [[{ text: "✅ Send to customer", callback_data: `secretary:approve:${token}` }, { text: "❌ Reject", callback_data: `secretary:reject:${token}` }]] } });
+}
+
+async function handleBusinessConnection(env, connection) {
+  await saveBusinessConnection(env, connection);
+  if (secretaryEnabled(env) && secretaryOwnerId(env) && connection?.is_enabled !== false) {
+    await sendMessage(env, secretaryOwnerId(env), `✅ Secretary Mode connection ${escapeHtml(String(connection.id))} ကို မှတ်သားပြီးပါပြီ။`);
+  }
+}
+
+async function handleSecretaryCallback(env, query, token, choice) {
+  const ownerId = secretaryOwnerId(env);
+  if (!ownerId || String(query.from?.id || "") !== ownerId) {
+    return sendMessage(env, query.message.chat.id, "ဒီ approval button ကို ပိုင်ရှင်ပဲ အသုံးပြုနိုင်ပါတယ်။");
+  }
+  const draft = await env.DB.prepare(
+    "SELECT token,connection_id,owner_id,chat_id,source_message_id,draft_text,status FROM secretary_drafts WHERE token=? AND expires_at>?"
+  ).bind(token, Math.floor(Date.now() / 1000)).first();
+  if (!draft || draft.status !== "pending") return editMessage(env, query.message.chat.id, query.message.message_id, "ဒီ Secretary draft သက်တမ်းကုန်သွားပါပြီ သို့မဟုတ် အသုံးပြုပြီးပါပြီ။");
+  if (choice === "reject") {
+    await env.DB.prepare("UPDATE secretary_drafts SET status='rejected' WHERE token=?").bind(token).run();
+    return editMessage(env, query.message.chat.id, query.message.message_id, "❌ Secretary draft ကို မပို့တော့ပါ။");
+  }
+  try {
+    await telegram(env, "sendMessage", {
+      chat_id: Number(draft.chat_id),
+      business_connection_id: String(draft.connection_id),
+      text: escapeHtml(String(draft.draft_text || "")),
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      reply_parameters: { message_id: Number(draft.source_message_id) },
+    });
+    await env.DB.prepare("UPDATE secretary_drafts SET status='approved' WHERE token=?").bind(token).run();
+    return editMessage(env, query.message.chat.id, query.message.message_id, "✅ Customer ဆီ reply ပို့ပြီးပါပြီ။");
+  } catch (error) {
+    console.error("Secretary send failed", error?.message || "unknown error");
+    return editMessage(env, query.message.chat.id, query.message.message_id, "⚠️ Customer ဆီ reply မပို့နိုင်သေးပါ။ Draft ကို မပျက်သေးပါ။");
+  }
 }
 
 async function editMessage(env, chatId, messageId, text, extra = {}) {
@@ -1736,6 +1861,8 @@ async function handleCallback(env, query) {
   if (action === "help_authors") return handleCommand(env, { chat: message.chat, text: "/authors" });
   if (action === "help_books") return handleCommand(env, { chat: message.chat, text: "/books" });
   if (action === "help_stats") return handleCommand(env, { chat: message.chat, text: "/stats" });
+  const secretaryMatch = String(action || "").match(/^secretary:(approve|reject):([a-f0-9]+)$/);
+  if (secretaryMatch) return handleSecretaryCallback(env, query, secretaryMatch[2], secretaryMatch[1]);
   const deleteMatch = String(action || "").match(/^delete:(yes|no|pick):([a-z0-9]+)$/);
   if (deleteMatch) {
     const [, choice, token] = deleteMatch;
@@ -1803,6 +1930,10 @@ export default {
       if (!(await claimWebhookUpdate(env, update.update_id))) return new Response("OK");
       if (update.inline_query) {
         ctx.waitUntil(handleInlineQuery(env, update.inline_query).catch((error) => console.error("Inline query handler failed", error?.message || "unknown error")));
+      } else if (update.business_connection) {
+        ctx.waitUntil(handleBusinessConnection(env, update.business_connection).catch((error) => console.error("Business connection handler failed", error?.message || "unknown error")));
+      } else if (update.business_message || update.edited_business_message) {
+        if (update.business_message) ctx.waitUntil(secretaryDraft(env, update.business_message).catch((error) => console.error("Secretary message handler failed", error?.message || "unknown error")));
       } else if (update.channel_post) {
         ctx.waitUntil(rememberChat(env, update.channel_post.chat));
         ctx.waitUntil(importChannelPost(env, update.channel_post).catch((error) => console.error("Channel import failed", error?.message || "unknown error")));
