@@ -190,7 +190,7 @@ function isGroupChat(chat) {
   return ["group", "supergroup"].includes(chat?.type);
 }
 function directMessageExtra(message) {
-  const topicId = message?.direct_messages_topic_id;
+  const topicId = message?.direct_messages_topic_id ?? message?.direct_messages_topic?.topic_id ?? message?.message_thread_id;
   return message?.chat?.is_direct_messages && topicId != null ? { direct_messages_topic_id: topicId } : {};
 }
 function autoDeleteEnabled(env) {
@@ -2113,6 +2113,9 @@ async function handleCommand(env, message) {
 async function handleMessage(env, message) {
   const text = String(message.text || "").trim();
   if (!text) return;
+  if (message?.chat?.is_direct_messages) {
+    console.log("Channel direct message received", JSON.stringify({ chatId: message.chat.id, topicId: message.direct_messages_topic_id ?? message.direct_messages_topic?.topic_id ?? message.message_thread_id, text: text.slice(0, 120) }));
+  }
   await Promise.all([rememberChat(env, message.chat), rememberUser(env, message.from)]);
   if (text.startsWith("/")) return handleCommand(env, message);
   const isGroup = ["group", "supergroup"].includes(message.chat?.type);
