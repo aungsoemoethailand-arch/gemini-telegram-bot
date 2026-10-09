@@ -748,6 +748,28 @@ async function openAiSecretaryReply(env, text, catalogContext = "") {
   }
 }
 
+async function probeAiProvider(endpoint, key, model) {
+  if (!key) return "မထည့်ရသေးပါ";
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 7000);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model, temperature: 0, max_tokens: 20, messages: [{ role: "user", content: "Reply with OK" }] }),
+    });
+    if (response.ok) return "OK";
+    const payload = await response.json().catch(() => ({}));
+    const detail = String(payload?.error?.message || payload?.error?.status || "HTTP error").replace(/\s+/gu, " ").slice(0, 120);
+    return `${response.status}: ${detail}`;
+  } catch (error) {
+    return error?.name === "AbortError" ? "timeout" : `${error?.name || "error"}`;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function secretaryAutoReply(env, message) {
   if (!secretaryEnabled(env) || !message?.business_connection_id || !message?.chat?.id || !message?.text) return;
   if (message.from?.is_bot) return;
@@ -769,9 +791,12 @@ async function secretaryAutoReply(env, message) {
   }
   const faqAnswer = await findSecretaryFaq(env, text);
   if (faqAnswer) return sendBusinessMessage(env, message, escapeHtml(faqAnswer));
-  if (!env.AI_API_KEY) return sendBusinessMessage(env, message, secretaryFallback(message));
   const endpoint = env.AI_API_URL || "https://api.openai.com/v1/chat/completions";
   const catalogContext = rows.slice(0, 8).map((row) => `${row.title || ""} — ${row.author || ""} — ${row.link || ""}`).join("\n");
+  if (!env.AI_API_KEY) {
+    const openAiAnswer = await openAiSecretaryReply(env, text, catalogContext);
+    return sendBusinessMessage(env, message, openAiAnswer ? escapeHtml(openAiAnswer) : secretaryFallback(message));
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12000);
   try {
@@ -1912,6 +1937,12 @@ async function handleCommand(env, message) {
       console.error("Webhook refresh failed", error?.message || "unknown error");
       return reply("Webhook ကို အသစ်ပြင်ဆင်လို့ မရသေးပါ။ ခဏစောင့်ပြီး ပြန်စမ်းပါ။");
     }
+  }
+  if (command === "/aicheck") {
+    if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
+    const gemini = await probeAiProvider(env.AI_API_URL || "https://api.openai.com/v1/chat/completions", env.AI_API_KEY, env.AI_MODEL || "gemini-3.8-flash");
+    const openai = await probeAiProvider("https://api.openai.com/v1/chat/completions", env.OPENAI_API_KEY, env.OPENAI_MODEL || "gpt-4o-mini");
+    return reply(`<b>AI provider test</b>\nGemini: <code>${escapeHtml(gemini)}</code>\nChatGPT: <code>${escapeHtml(openai)}</code>`);
   }
   if (command === "/start" || command === "/help") {
     return reply("<b>📚 စာအုပ်ရှာဖွေရေး Bot</b>\n\nအောက်က menu ကနေ ရွေးနိုင်ပါတယ်ရှင်။", { reply_markup: { inline_keyboard: [
