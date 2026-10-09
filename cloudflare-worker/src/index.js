@@ -2261,8 +2261,8 @@ export default {
         ctx.waitUntil(auditAction(env, update.edited_message, "message_edited", null, `message_id=${update.edited_message.message_id}`).catch((error) => console.error("Edit audit failed", error?.message || "unknown error")));
       } else if (update.message) {
         const message = update.message;
-        ctx.waitUntil(rememberChat(env, message.chat));
-        ctx.waitUntil(enforceForwardPolicy(env, message).then(async (blocked) => {
+        await rememberChat(env, message.chat);
+        await enforceForwardPolicy(env, message).then(async (blocked) => {
           if (blocked) return null;
           if (message.text) {
             if (isGroupMessage(message) && autoDeleteEnabled(env) && message.text.trim().startsWith("/")) {
@@ -2271,7 +2271,7 @@ export default {
             return handleMessage(env, message);
           }
           return serviceEvent(env, message);
-        }).catch((error) => console.error("Message handling failed", error?.message || "unknown error")));
+        }).catch((error) => console.error("Message handling failed", error?.message || "unknown error"));
       }
       return new Response("OK");
     } catch (error) {
