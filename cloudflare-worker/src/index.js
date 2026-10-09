@@ -624,6 +624,52 @@ async function sendBusinessMessage(env, message, text, extra = {}) {
   });
 }
 
+async function sendBusinessTyping(env, message) {
+  try {
+    await telegram(env, "sendChatAction", {
+      chat_id: Number(message.chat.id),
+      business_connection_id: String(message.business_connection_id),
+      action: "typing",
+    });
+  } catch (error) {
+    console.log("Business typing indicator skipped", error?.message || "unknown error");
+  }
+}
+
+const SECRETARY_FALLBACKS = {
+  greeting: [
+    "မင်္ဂလာပါရှင်။ စာပို့လာတာကို လက်ခံရရှိပါတယ်နော်။ ဘာကူညီပေးရမလဲရှင်။",
+    "မင်္ဂလာပါရှင်။ အဆင်ပြေပါသလား။ မေးချင်တာလေး ပြောပေးပါနော်။",
+    "ဟယ်လိုရှင်။ စာပို့ထားတာတွေ့ပါတယ်။ လိုအပ်တာကို ပြောလို့ရပါတယ်နော်။",
+  ],
+  thanks: [
+    "ရပါတယ်ရှင်။ လိုအပ်တာရှိရင် အချိန်မရွေး ပြောလို့ရပါတယ်နော်။",
+    "ကျေးဇူးတင်စရာမလိုပါဘူးရှင်။ ကူညီပေးရတာ ဝမ်းသာပါတယ်နော်။",
+  ],
+  general: [
+    "စာပို့လာတာ ကျေးဇူးပါရှင်။ အကြောင်းအရာလေးကို စစ်ပြီး ပြန်ဖြေပေးပါမယ်နော်။",
+    "နားလည်ပါတယ်ရှင်။ ဒီကိစ္စကို သေချာစဉ်းစားပြီး ပြန်ပြောပေးပါမယ်နော်။",
+    "မေးထားတာလေးကို လက်ခံထားပါတယ်ရှင်။ လိုအပ်တာရှိရင် ထပ်ပြောပေးပါနော်။",
+    "ဟုတ်ကဲ့ရှင်။ အကြောင်းအရာလေးကို ကြည့်ပြီး အဆင်ပြေအောင် ကူညီပေးပါမယ်နော်။",
+    "စာရောက်ပါတယ်ရှင်။ ခဏလေး စစ်ပေးပြီး ပြန်အကြောင်းကြားပါမယ်နော်။",
+    "နားလည်ပါပြီရှင်။ ပိုတိကျအောင် အသေးစိတ်လေး ပြောပေးရင် ကူညီပေးရလွယ်ပါမယ်နော်။",
+    "အခုချက်ချင်း မသေချာသေးလို့ မှားမပြောချင်ပါဘူးရှင်။ စစ်ဆေးပြီး ပြန်ဖြေပေးပါမယ်နော်။",
+  ],
+};
+const secretaryFallbackState = new Map();
+function secretaryFallback(message) {
+  const text = String(message.text || "");
+  const key = /မင်္ဂလာ|hello|ဟယ်လို|hi\b/iu.test(text) ? "greeting" : (/ကျေးဇူး|thanks|thank you/iu.test(text) ? "thanks" : "general");
+  const pool = SECRETARY_FALLBACKS[key];
+  const stateKey = `${message.business_connection_id}:${message.chat.id}:${key}`;
+  const previous = secretaryFallbackState.get(stateKey);
+  const candidates = pool.map((_, index) => index).filter((index) => index !== previous);
+  const index = candidates[Math.floor(Math.random() * candidates.length)] ?? 0;
+  secretaryFallbackState.set(stateKey, index);
+  if (secretaryFallbackState.size > 1000) secretaryFallbackState.delete(secretaryFallbackState.keys().next().value);
+  return pool[index];
+}
+
 async function sendBusinessBookResults(env, message, query, rows) {
   const visible = rows.slice(0, 10);
   const lines = [`<b>📚 ${escapeHtml(query)}</b> နဲ့ ကိုက်ညီတဲ့ စာအုပ် ${rows.length} အုပ် တွေ့ပါတယ်ရှင်။`, "အောက်က ခလုတ်ကနေ တိုက်ရိုက်ဖွင့်ကြည့်နိုင်ပါတယ်။"];
@@ -646,6 +692,7 @@ async function secretaryAutoReply(env, message) {
   ).bind(String(message.business_connection_id)).first();
   if (connection && (!Number(connection.is_enabled) || !Number(connection.can_reply))) return;
   const text = String(message.text).trim();
+  await sendBusinessTyping(env, message);
   const natural = extractNaturalSearchQuery(text);
   const slashQuery = text.replace(/^\/(?:search|find)(?:@\w+)?\s*/iu, "").trim();
   const query = String(natural?.query || (slashQuery !== text ? slashQuery : text)).trim();
@@ -654,7 +701,7 @@ async function secretaryAutoReply(env, message) {
   if (natural || slashQuery !== text) {
     return sendBusinessMessage(env, message, `${escapeHtml(query)} နဲ့ ကိုက်ညီတဲ့ စာအုပ်ကို catalog ထဲမှာ မတွေ့သေးပါဘူးရှင်။`);
   }
-  if (!env.AI_API_KEY) return sendBusinessMessage(env, message, "အခုတော့ စာပြန်ပေးတဲ့ AI service မရသေးပါဘူးရှင်။");
+  if (!env.AI_API_KEY) return sendBusinessMessage(env, message, secretaryFallback(message));
   const endpoint = env.AI_API_URL || "https://api.openai.com/v1/chat/completions";
   const catalogContext = rows.slice(0, 8).map((row) => `${row.title || ""} — ${row.author || ""} — ${row.link || ""}`).join("\n");
   const controller = new AbortController();
@@ -681,7 +728,7 @@ async function secretaryAutoReply(env, message) {
     return sendBusinessMessage(env, message, escapeHtml(answer));
   } catch (error) {
     console.error("Secretary auto reply failed", error?.message || "unknown error");
-    return sendBusinessMessage(env, message, "ခဏလေးနော်၊ အခု စာပြန်ပေးဖို့ အခက်အခဲရှိနေပါတယ်ရှင်။");
+    return sendBusinessMessage(env, message, secretaryFallback(message));
   } finally {
     clearTimeout(timeout);
   }
@@ -1896,17 +1943,19 @@ async function handleMessage(env, message) {
   const isGroup = ["group", "supergroup"].includes(message.chat?.type);
   const replyTarget = message.reply_to_message;
   let botMentioned = false;
+  let queryText = text;
   if (isGroup && message.entities?.some((entity) => entity.type === "mention")) {
     try {
       const botUsername = (await getBotIdentity(env)).username;
       botMentioned = Boolean(botUsername && text.toLowerCase().includes(`@${String(botUsername).toLowerCase()}`));
+      if (botMentioned) queryText = text.replace(`@${botUsername}`, "").replace(/\s+/g, " ").trim();
     } catch (error) {
       console.log("Bot mention check failed", error?.message || "unknown error");
     }
   }
   if (isGroup && replyTarget?.from && !replyTarget.from.is_bot && !botMentioned) return;
   const cleanup = isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {};
-  const natural = extractNaturalSearchQuery(text);
+  const natural = extractNaturalSearchQuery(queryText);
   if (natural) {
     if (!allowCatalogSearch(message)) return null;
     const naturalRows = await searchBooks(env, natural.query);
@@ -1918,13 +1967,13 @@ async function handleMessage(env, message) {
     // only searched an exact author/title in this fast path, and stayed
     // silent when there was no exact catalog match.
     if (!allowCatalogSearch(message)) return null;
-    const exactRows = await searchExactBook(env, text);
+    const exactRows = await searchExactBook(env, queryText);
     if (!exactRows.length) return null;
-    return sendSearch(env, message.chat.id, text, cleanup, true, { user: message.from, chatType: message.chat?.type }, exactRows);
+    return sendSearch(env, message.chat.id, queryText, cleanup, true, { user: message.from, chatType: message.chat?.type }, exactRows);
   }
   if (isGroup && !botMentioned) return null;
   if (!allowCatalogSearch(message)) return null;
-  return sendSearch(env, message.chat.id, text, cleanup, false, { user: message.from, chatType: message.chat?.type });
+  return sendSearch(env, message.chat.id, queryText, cleanup, false, { user: message.from, chatType: message.chat?.type });
 }
 
 async function handleCallback(env, query) {
