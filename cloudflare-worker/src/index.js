@@ -611,6 +611,85 @@ async function handleBusinessConnection(env, connection) {
   }
 }
 
+async function sendBusinessMessage(env, message, text, extra = {}) {
+  const { reply = true, ...telegramExtra } = extra;
+  return telegram(env, "sendMessage", {
+    chat_id: Number(message.chat.id),
+    business_connection_id: String(message.business_connection_id),
+    text,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...(reply && message.message_id ? { reply_parameters: { message_id: Number(message.message_id) } } : {}),
+    ...telegramExtra,
+  });
+}
+
+async function sendBusinessBookResults(env, message, query, rows) {
+  const visible = rows.slice(0, 10);
+  const lines = [`<b>📚 ${escapeHtml(query)}</b> နဲ့ ကိုက်ညီတဲ့ စာအုပ် ${rows.length} အုပ် တွေ့ပါတယ်ရှင်။`, "အောက်က ခလုတ်ကနေ တိုက်ရိုက်ဖွင့်ကြည့်နိုင်ပါတယ်။"];
+  const buttons = [];
+  visible.forEach((row, index) => {
+    lines.push(`\n<b>${index + 1}. ${escapeHtml(row.title || "ခေါင်းစဉ်မရှိ")}</b>${row.author ? ` — ${escapeHtml(row.author)}` : ""}`);
+    try {
+      const url = new URL(String(row.link || ""));
+      if (["http:", "https:"].includes(url.protocol)) buttons.push([{ text: `📖 ${`${index + 1}. ${row.title || "စာအုပ်"}`.slice(0, 58)}`, url: url.toString() }]);
+    } catch {}
+  });
+  return sendBusinessMessage(env, message, lines.join("\n"), { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function secretaryAutoReply(env, message) {
+  if (!secretaryEnabled(env) || !message?.business_connection_id || !message?.chat?.id || !message?.text) return;
+  const connection = await env.DB.prepare(
+    "SELECT can_reply,is_enabled FROM business_connections WHERE connection_id=?"
+  ).bind(String(message.business_connection_id)).first();
+  if (connection && (!Number(connection.is_enabled) || !Number(connection.can_reply))) return;
+  const text = String(message.text).trim();
+  const parsed = await interpretCatalogQuery(env, text);
+  const natural = extractNaturalSearchQuery(text);
+  const slashQuery = text.replace(/^\/(?:search|find)(?:@\w+)?\s*/iu, "").trim();
+  const query = String(parsed?.query || natural?.query || (slashQuery !== text ? slashQuery : "")).trim();
+  if (query && (parsed?.intent === "books" || parsed?.intent === "reviews" || parsed?.intent === "info" || natural || slashQuery !== text)) {
+    const rows = await searchBooks(env, query);
+    if (rows.length) return sendBusinessBookResults(env, message, query, rows);
+    if (parsed?.intent === "books" || natural || slashQuery !== text) {
+      return sendBusinessMessage(env, message, `${escapeHtml(query)} နဲ့ ကိုက်ညီတဲ့ စာအုပ်ကို catalog ထဲမှာ မတွေ့သေးပါဘူးရှင်။`);
+    }
+  }
+  if (!env.AI_API_KEY) return sendBusinessMessage(env, message, "အခုတော့ စာပြန်ပေးတဲ့ AI service မရသေးပါဘူးရှင်။");
+  const endpoint = env.AI_API_URL || "https://api.openai.com/v1/chat/completions";
+  const catalogRows = query ? await searchBooks(env, query) : [];
+  const catalogContext = catalogRows.slice(0, 8).map((row) => `${row.title || ""} — ${row.author || ""} — ${row.link || ""}`).join("\n");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "content-type": "application/json", authorization: `Bearer ${env.AI_API_KEY}` },
+      body: JSON.stringify({
+        model: env.AI_MODEL || "gemini-3.8-flash",
+        temperature: 0.35,
+        max_tokens: 500,
+        messages: [
+          { role: "system", content: "You are a warm, concise Burmese-speaking secretary replying automatically on behalf of the account owner. Reply naturally to the customer's message. Do not claim to be the owner. Do not invent personal facts, prices, availability, or promises. If the customer asks about a book and the catalog context is present, use it accurately and include the provided link when useful. Return only the reply text." },
+          { role: "user", content: `${catalogContext ? `Known book catalog:\n${catalogContext}\n\n` : ""}Customer message:\n${text.slice(0, 4000)}` },
+        ],
+      }),
+    });
+    if (!response.ok) throw new Error(`Secretary AI HTTP ${response.status}`);
+    const payload = await response.json();
+    const answer = String(payload?.choices?.[0]?.message?.content || "").trim().slice(0, 3500);
+    if (!answer) throw new Error("empty secretary auto reply");
+    return sendBusinessMessage(env, message, escapeHtml(answer));
+  } catch (error) {
+    console.error("Secretary auto reply failed", error?.message || "unknown error");
+    return sendBusinessMessage(env, message, "ခဏလေးနော်၊ အခု စာပြန်ပေးဖို့ အခက်အခဲရှိနေပါတယ်ရှင်။");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function handleSecretaryCallback(env, query, token, choice) {
   const ownerId = secretaryOwnerId(env);
   if (!ownerId || String(query.from?.id || "") !== ownerId) {
@@ -1933,7 +2012,7 @@ export default {
       } else if (update.business_connection) {
         ctx.waitUntil(handleBusinessConnection(env, update.business_connection).catch((error) => console.error("Business connection handler failed", error?.message || "unknown error")));
       } else if (update.business_message || update.edited_business_message) {
-        if (update.business_message) ctx.waitUntil(secretaryDraft(env, update.business_message).catch((error) => console.error("Secretary message handler failed", error?.message || "unknown error")));
+        if (update.business_message) ctx.waitUntil(secretaryAutoReply(env, update.business_message).catch((error) => console.error("Secretary message handler failed", error?.message || "unknown error")));
       } else if (update.channel_post) {
         ctx.waitUntil(rememberChat(env, update.channel_post.chat));
         ctx.waitUntil(importChannelPost(env, update.channel_post).catch((error) => console.error("Channel import failed", error?.message || "unknown error")));
