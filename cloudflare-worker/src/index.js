@@ -23,6 +23,7 @@ const searchThrottle = new Map();
 const searchSessionCache = new Map();
 let botIdentityCache = null;
 let bookRowsCache = null;
+let bookSearchEntriesCache = null;
 let bookRowsCacheAt = 0;
 
 function nextSearchIntro(chatId) {
@@ -1252,20 +1253,19 @@ async function searchBooks(env, query) {
   if (!bookRowsCache || now - bookRowsCacheAt > 30000) {
     const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
     bookRowsCache = rows.results || [];
+    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), title: normalize(row.title), isReview: isReviewRecord(row) }));
     bookRowsCacheAt = now;
   }
   const needle = normalize(query);
   const parts = String(query || "").split(/\s+/).map(normalize).filter(Boolean);
   const aliases = await loadAuthorAliasData(env);
   const queryGroup = aliases.byKey.get(needle)?.group_id || "";
-  return bookRowsCache.filter((row) => {
-    if (isReviewRecord(row)) return false;
-    const author = normalize(row.author);
-    const title = normalize(row.title);
-    const combined = `${author}${title}`;
-    const authorGroup = aliases.byKey.get(author)?.group_id || "";
-    return author.includes(needle) || title.includes(needle) || (queryGroup && authorGroup === queryGroup) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
-  }).slice(0, MAX_BOOK_RESULTS);
+  return bookSearchEntriesCache.filter((entry) => {
+    if (entry.isReview) return false;
+    const combined = `${entry.author}${entry.title}`;
+    const authorGroup = aliases.byKey.get(entry.author)?.group_id || "";
+    return entry.author.includes(needle) || entry.title.includes(needle) || (queryGroup && authorGroup === queryGroup) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
+  }).map((entry) => entry.row).slice(0, MAX_BOOK_RESULTS);
 }
 
 async function handleInlineQuery(env, inlineQuery) {
@@ -1332,16 +1332,16 @@ async function searchExactBook(env, query) {
   if (!bookRowsCache || now - bookRowsCacheAt > 30000) {
     const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
     bookRowsCache = rows.results || [];
+    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), title: normalize(row.title), isReview: isReviewRecord(row) }));
     bookRowsCacheAt = now;
   }
   const aliases = await loadAuthorAliasData(env);
   const queryGroup = aliases.byKey.get(needle)?.group_id || "";
-  return bookRowsCache.filter((row) => {
-    if (isReviewRecord(row)) return false;
-    const author = normalize(row.author);
-    const authorGroup = aliases.byKey.get(author)?.group_id || "";
-    return author === needle || normalize(row.title) === needle || (queryGroup && authorGroup === queryGroup);
-  }).slice(0, MAX_BOOK_RESULTS);
+  return bookSearchEntriesCache.filter((entry) => {
+    if (entry.isReview) return false;
+    const authorGroup = aliases.byKey.get(entry.author)?.group_id || "";
+    return entry.author === needle || entry.title === needle || (queryGroup && authorGroup === queryGroup);
+  }).map((entry) => entry.row).slice(0, MAX_BOOK_RESULTS);
 }
 
 function shouldUseSmartSearch(text, isGroup, botMentioned, replyTarget) {
