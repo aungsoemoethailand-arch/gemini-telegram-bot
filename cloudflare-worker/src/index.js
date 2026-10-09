@@ -1516,8 +1516,8 @@ async function sendSearch(env, chatId, query, cleanup = {}, exact = false, speak
   const storedQuery = JSON.stringify({ query, exact, mention, introIndex, formatRequest, rows: sessionRows });
   searchSessionCache.set(token, storedQuery);
   if (searchSessionCache.size > 500) searchSessionCache.delete(searchSessionCache.keys().next().value);
-  await env.DB.prepare("INSERT OR REPLACE INTO search_sessions(token,query,created_at) VALUES(?,?,?)")
-    .bind(token, storedQuery, Math.floor(Date.now() / 1000)).run();
+  env.DB.prepare("INSERT OR REPLACE INTO search_sessions(token,query,created_at) VALUES(?,?,?)")
+    .bind(token, storedQuery, Math.floor(Date.now() / 1000)).run().catch((error) => console.log("Search session persistence skipped", error?.message || "unknown error"));
   return sendSearchPage(env, chatId, query, 0, cleanup, exact, token, null, mention, introIndex, rows, formatRequest);
 }
 
