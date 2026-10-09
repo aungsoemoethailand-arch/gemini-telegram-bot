@@ -186,6 +186,34 @@ function messageLink(chatId, messageId) {
   return id.startsWith("-100") ? `https://t.me/c/${id.slice(4)}/${messageId}` : "";
 }
 
+function channelPostLink(chat, messageId) {
+  if (chat?.username) return `https://t.me/${chat.username}/${messageId}`;
+  return messageLink(chat?.id, messageId);
+}
+
+function extractEpubRecord(post) {
+  const fileName = String(post?.document?.file_name || "").trim();
+  if (!/\.epub$/iu.test(fileName)) return null;
+  const caption = String(post?.caption || "").trim();
+  const baseName = fileName.replace(/\.epub$/iu, "").replace(/[._]+/gu, " ").replace(/\s+/gu, " ").trim();
+  const source = caption || baseName;
+  const cleaned = source
+    .replace(/https?:\/\/\S+/giu, " ")
+    .replace(/^\s*(?:စာအုပ်နာမည်|စာအုပ်အမည်|title|book)\s*[:：-]\s*/iu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const labelledTitle = cleaned.match(/(?:စာအုပ်နာမည်|စာအုပ်အမည်|title|book)\s*[:：]\s*(.+?)(?=\s+(?:စာရေးသူ|author)\s*[:：]|$)/iu)?.[1]?.trim();
+  const labelledAuthor = cleaned.match(/(?:စာရေးသူ|author)\s*[:：]\s*(.+)$/iu)?.[1]?.trim();
+  let title = labelledTitle || "";
+  let author = labelledAuthor || "";
+  if (!title || !author) {
+    const parts = cleaned.split(/\s+[-–—|]\s+/u).map((part) => part.trim()).filter(Boolean);
+    title ||= parts[0] || baseName;
+    author ||= parts[1] || "";
+  }
+  return { author, title, link: channelPostLink(post.chat, post.message_id) };
+}
+
 function isGroupMessage(message) {
   return ["group", "supergroup"].includes(message?.chat?.type);
 }
@@ -973,6 +1001,9 @@ async function saveRecords(env, chatId, messageId, records, rawText) {
   for (let index = 0; index < statements.length; index += 50) {
     await env.DB.batch(statements.slice(index, index + 50));
   }
+  bookRowsCache = null;
+  bookSearchEntriesCache = null;
+  bookRowsCacheAt = 0;
   if (statements.length) await syncPendingGitHub(env);
 }
 
@@ -1172,6 +1203,15 @@ async function importChannelPost(env, post) {
     const csv = await response.text();
     await importNewCatalogRecords(env, post, extractRecords(csv, messageLink(post.chat.id, post.message_id)), csv);
     return;
+  }
+  if (post.document) {
+    const epubRecord = extractEpubRecord(post);
+    if (epubRecord) {
+      await importNewCatalogRecords(env, post, [epubRecord], post.caption || post.document.file_name || "");
+      return;
+    }
+    // Only EPUB documents are book sources. KFX and every other file type stay ignored.
+    if (post.document.file_name) return;
   }
   if (text) {
     const review = extractHashtagReview(text, messageLink(post.chat.id, post.message_id));
