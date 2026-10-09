@@ -21,6 +21,8 @@ const chatWriteCache = new Map();
 const userWriteCache = new Map();
 const searchThrottle = new Map();
 let botIdentityCache = null;
+let bookRowsCache = null;
+let bookRowsCacheAt = 0;
 
 function nextSearchIntro(chatId) {
   const previous = lastSearchIntro.get(String(chatId));
@@ -1245,14 +1247,17 @@ async function mergeAuthorAliases(env, inputNames) {
 }
 
 async function searchBooks(env, query) {
-  const rows = await env.DB.prepare(
-    "SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000"
-  ).all();
+  const now = Date.now();
+  if (!bookRowsCache || now - bookRowsCacheAt > 30000) {
+    const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
+    bookRowsCache = rows.results || [];
+    bookRowsCacheAt = now;
+  }
   const needle = normalize(query);
   const parts = String(query || "").split(/\s+/).map(normalize).filter(Boolean);
   const aliases = await loadAuthorAliasData(env);
   const queryGroup = aliases.byKey.get(needle)?.group_id || "";
-  return (rows.results || []).filter((row) => {
+  return bookRowsCache.filter((row) => {
     if (isReviewRecord(row)) return false;
     const author = normalize(row.author);
     const title = normalize(row.title);
@@ -1322,10 +1327,15 @@ async function handleInlineQuery(env, inlineQuery) {
 
 async function searchExactBook(env, query) {
   const needle = normalize(query);
-  const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
+  const now = Date.now();
+  if (!bookRowsCache || now - bookRowsCacheAt > 30000) {
+    const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
+    bookRowsCache = rows.results || [];
+    bookRowsCacheAt = now;
+  }
   const aliases = await loadAuthorAliasData(env);
   const queryGroup = aliases.byKey.get(needle)?.group_id || "";
-  return (rows.results || []).filter((row) => {
+  return bookRowsCache.filter((row) => {
     if (isReviewRecord(row)) return false;
     const author = normalize(row.author);
     const authorGroup = aliases.byKey.get(author)?.group_id || "";
@@ -2115,9 +2125,9 @@ async function handleMessage(env, message) {
   if (!text) return;
   if (message?.chat?.is_direct_messages) {
     console.log("Channel direct message received", JSON.stringify({ chatId: message.chat.id, topicId: message.direct_messages_topic_id ?? message.direct_messages_topic?.topic_id ?? message.message_thread_id, text: text.slice(0, 120) }));
-    await telegram(env, "sendChatAction", { chat_id: message.chat.id, action: "typing", ...directMessageExtra(message) }).catch((error) => console.log("Channel DM typing skipped", error?.message || "unknown error"));
+    telegram(env, "sendChatAction", { chat_id: message.chat.id, action: "typing", ...directMessageExtra(message) }).catch((error) => console.log("Channel DM typing skipped", error?.message || "unknown error"));
   }
-  await Promise.all([rememberChat(env, message.chat), rememberUser(env, message.from)]);
+  if (!message?.chat?.is_direct_messages) await Promise.all([rememberChat(env, message.chat), rememberUser(env, message.from)]);
   if (text.startsWith("/")) return handleCommand(env, message);
   const isGroup = ["group", "supergroup"].includes(message.chat?.type);
   const replyTarget = message.reply_to_message;
