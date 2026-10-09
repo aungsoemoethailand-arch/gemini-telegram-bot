@@ -749,7 +749,7 @@ async function openAiSecretaryReply(env, text, catalogContext = "") {
 }
 
 function groqApiKeys(env) {
-  const keys = [env.GROQ_API_KEY];
+  const keys = [env.GROQ_API_KEY, ...Array.from({ length: 10 }, (_, index) => env[`GROQ_API_KEY_${index + 1}`])];
   if (env.GROQ_API_KEYS) {
     try {
       const parsed = JSON.parse(env.GROQ_API_KEYS);
