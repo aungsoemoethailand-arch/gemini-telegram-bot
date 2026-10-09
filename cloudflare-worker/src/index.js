@@ -20,6 +20,7 @@ const lastPdfNote = new Map();
 const chatWriteCache = new Map();
 const userWriteCache = new Map();
 const searchThrottle = new Map();
+const searchSessionCache = new Map();
 let botIdentityCache = null;
 let bookRowsCache = null;
 let bookRowsCacheAt = 0;
@@ -1513,6 +1514,8 @@ async function sendSearch(env, chatId, query, cleanup = {}, exact = false, speak
   const rows = prefetchedRows || (exact ? await searchExactBook(env, query) : await searchBooks(env, query));
   const sessionRows = rows.slice(0, MAX_BOOK_RESULTS).map((row) => ({ chat_id: row.chat_id, author: row.author, title: row.title, link: row.link }));
   const storedQuery = JSON.stringify({ query, exact, mention, introIndex, formatRequest, rows: sessionRows });
+  searchSessionCache.set(token, storedQuery);
+  if (searchSessionCache.size > 500) searchSessionCache.delete(searchSessionCache.keys().next().value);
   await env.DB.prepare("INSERT OR REPLACE INTO search_sessions(token,query,created_at) VALUES(?,?,?)")
     .bind(token, storedQuery, Math.floor(Date.now() / 1000)).run();
   return sendSearchPage(env, chatId, query, 0, cleanup, exact, token, null, mention, introIndex, rows, formatRequest);
@@ -2170,7 +2173,7 @@ async function handleCallback(env, query) {
   const action = query.data;
   const message = query.message;
   if (!message) return;
-  await rememberChat(env, message.chat);
+  rememberChat(env, message.chat).catch(() => {});
   if (action === "help_search") return sendMessage(env, message.chat.id, "သုံးပုံ: /search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ");
   if (action === "help_authors") return handleCommand(env, { chat: message.chat, text: "/authors" });
   if (action === "help_books") return handleCommand(env, { chat: message.chat, text: "/books" });
@@ -2201,7 +2204,8 @@ async function handleCallback(env, query) {
   }
   const searchMatch = String(action || "").match(/^search:([a-z0-9]+):(\d+)$/);
   if (searchMatch) {
-    const session = await env.DB.prepare("SELECT query FROM search_sessions WHERE token=? AND created_at>? ").bind(searchMatch[1], Math.floor(Date.now() / 1000) - 86400).first();
+    const cachedQuery = searchSessionCache.get(searchMatch[1]);
+    const session = cachedQuery ? { query: cachedQuery } : await env.DB.prepare("SELECT query FROM search_sessions WHERE token=? AND created_at>? ").bind(searchMatch[1], Math.floor(Date.now() / 1000) - 86400).first();
     if (!session) return sendMessage(env, message.chat.id, "ဒီရှာဖွေမှု button သက်တမ်းကုန်သွားပါပြီ။ ပြန်ရှာပါ။");
     const stored = String(session.query || "");
     let query;
