@@ -748,6 +748,35 @@ async function openAiSecretaryReply(env, text, catalogContext = "") {
   }
 }
 
+async function groqSecretaryReply(env, text, catalogContext = "") {
+  if (!env.GROQ_API_KEY) return "";
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "content-type": "application/json", authorization: `Bearer ${env.GROQ_API_KEY}` },
+      body: JSON.stringify({
+        model: env.GROQ_MODEL || "qwen/qwen3.8-27b",
+        temperature: 0.35,
+        max_tokens: 500,
+        messages: [
+          { role: "system", content: "You are a warm, concise Burmese-speaking secretary. Reply naturally and politely. Do not invent facts, prices, promises, or personal information. Return only the reply text." },
+          { role: "user", content: `${catalogContext ? `Known book catalog:\n${catalogContext}\n\n` : ""}Customer message:\n${String(text).slice(0, 4000)}` },
+        ],
+      }),
+    });
+    if (!response.ok) return "";
+    const payload = await response.json();
+    return String(payload?.choices?.[0]?.message?.content || "").trim().slice(0, 3500);
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function probeAiProvider(endpoint, key, model) {
   if (!key) return "မထည့်ရသေးပါ";
   const controller = new AbortController();
@@ -793,6 +822,8 @@ async function secretaryAutoReply(env, message) {
   if (faqAnswer) return sendBusinessMessage(env, message, escapeHtml(faqAnswer));
   const endpoint = env.AI_API_URL || "https://api.openai.com/v1/chat/completions";
   const catalogContext = rows.slice(0, 8).map((row) => `${row.title || ""} — ${row.author || ""} — ${row.link || ""}`).join("\n");
+  const groqAnswer = await groqSecretaryReply(env, text, catalogContext);
+  if (groqAnswer) return sendBusinessMessage(env, message, escapeHtml(groqAnswer));
   if (!env.AI_API_KEY) {
     const openAiAnswer = await openAiSecretaryReply(env, text, catalogContext);
     return sendBusinessMessage(env, message, openAiAnswer ? escapeHtml(openAiAnswer) : secretaryFallback(message));
@@ -1942,7 +1973,8 @@ async function handleCommand(env, message) {
     if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
     const gemini = await probeAiProvider(env.AI_API_URL || "https://api.openai.com/v1/chat/completions", env.AI_API_KEY, env.AI_MODEL || "gemini-3.8-flash");
     const openai = await probeAiProvider("https://api.openai.com/v1/chat/completions", env.OPENAI_API_KEY, env.OPENAI_MODEL || "gpt-4o-mini");
-    return reply(`<b>AI provider test</b>\nGemini: <code>${escapeHtml(gemini)}</code>\nChatGPT: <code>${escapeHtml(openai)}</code>`);
+    const groq = await probeAiProvider("https://api.groq.com/openai/v1/chat/completions", env.GROQ_API_KEY, env.GROQ_MODEL || "qwen/qwen3.8-27b");
+    return reply(`<b>AI provider test</b>\nGemini: <code>${escapeHtml(gemini)}</code>\nGroq/Qwen: <code>${escapeHtml(groq)}</code>\nChatGPT: <code>${escapeHtml(openai)}</code>`);
   }
   if (command === "/start" || command === "/help") {
     return reply("<b>📚 စာအုပ်ရှာဖွေရေး Bot</b>\n\nအောက်က menu ကနေ ရွေးနိုင်ပါတယ်ရှင်။", { reply_markup: { inline_keyboard: [
