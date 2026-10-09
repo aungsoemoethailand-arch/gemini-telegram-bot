@@ -189,7 +189,10 @@ function isGroupMessage(message) {
 function isGroupChat(chat) {
   return ["group", "supergroup"].includes(chat?.type);
 }
-
+function directMessageExtra(message) {
+  const topicId = message?.direct_messages_topic_id;
+  return message?.chat?.is_direct_messages && topicId != null ? { direct_messages_topic_id: topicId } : {};
+}
 function autoDeleteEnabled(env) {
   return env.AUTO_DELETE_ENABLED !== "false" && env.AUTO_DELETE_ENABLED !== "0";
 }
@@ -1974,7 +1977,7 @@ async function handleCommand(env, message) {
   const command = rawCommand.split("@")[0].toLowerCase();
   const query = args.join(" ").trim();
   const chatId = message.chat.id;
-  const cleanup = isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {};
+  const cleanup = { ...(isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {}), ...directMessageExtra(message) };
   const reply = (text, extra = {}) => sendMessage(env, chatId, text, { ...cleanup, ...extra });
   if (await handleGuardianCommand(env, message, command, args, reply)) return null;
   if (command === "/refreshwebhook") {
@@ -2126,7 +2129,7 @@ async function handleMessage(env, message) {
     }
   }
   if (isGroup && replyTarget?.from && !replyTarget.from.is_bot && !botMentioned) return;
-  const cleanup = isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {};
+  const cleanup = { ...(isGroupMessage(message) ? { __deleteAfterSeconds: resultDeleteSeconds(env) } : {}), ...directMessageExtra(message) };
   const natural = extractNaturalSearchQuery(queryText);
   if (natural) {
     if (!allowCatalogSearch(message)) return null;
