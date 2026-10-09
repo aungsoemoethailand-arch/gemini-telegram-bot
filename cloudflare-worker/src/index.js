@@ -2115,6 +2115,7 @@ async function handleMessage(env, message) {
   if (!text) return;
   if (message?.chat?.is_direct_messages) {
     console.log("Channel direct message received", JSON.stringify({ chatId: message.chat.id, topicId: message.direct_messages_topic_id ?? message.direct_messages_topic?.topic_id ?? message.message_thread_id, text: text.slice(0, 120) }));
+    await telegram(env, "sendChatAction", { chat_id: message.chat.id, action: "typing", ...directMessageExtra(message) }).catch((error) => console.log("Channel DM typing skipped", error?.message || "unknown error"));
   }
   await Promise.all([rememberChat(env, message.chat), rememberUser(env, message.from)]);
   if (text.startsWith("/")) return handleCommand(env, message);
