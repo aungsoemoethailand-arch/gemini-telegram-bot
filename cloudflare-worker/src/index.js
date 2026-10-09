@@ -663,6 +663,14 @@ async function allowSecretaryReply(env, message) {
   return true;
 }
 
+async function findSecretaryFaq(env, text) {
+  const normalizedText = normalize(text);
+  if (!normalizedText) return null;
+  const result = await env.DB.prepare("SELECT trigger,answer FROM secretary_faq ORDER BY LENGTH(trigger) DESC LIMIT 200").all();
+  const match = (result.results || []).find((row) => normalizedText.includes(normalize(row.trigger)));
+  return match?.answer ? String(match.answer) : null;
+}
+
 const SECRETARY_FALLBACKS = {
   greeting: [
     "မင်္ဂလာပါရှင်။ စာပို့လာတာကို လက်ခံရရှိပါတယ်နော်။ ဘာကူညီပေးရမလဲရှင်။",
@@ -711,6 +719,35 @@ async function sendBusinessBookResults(env, message, query, rows) {
   return sendBusinessMessage(env, message, lines.join("\n"), { reply_markup: { inline_keyboard: buttons } });
 }
 
+async function openAiSecretaryReply(env, text, catalogContext = "") {
+  if (!env.OPENAI_API_KEY) return "";
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "content-type": "application/json", authorization: `Bearer ${env.OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: env.OPENAI_MODEL || "gpt-4o-mini",
+        temperature: 0.35,
+        max_tokens: 500,
+        messages: [
+          { role: "system", content: "You are a warm, concise Burmese-speaking secretary. Reply naturally and politely. Do not invent facts, prices, promises, or personal information. Return only the reply text." },
+          { role: "user", content: `${catalogContext ? `Known book catalog:\n${catalogContext}\n\n` : ""}Customer message:\n${String(text).slice(0, 4000)}` },
+        ],
+      }),
+    });
+    if (!response.ok) return "";
+    const payload = await response.json();
+    return String(payload?.choices?.[0]?.message?.content || "").trim().slice(0, 3500);
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function secretaryAutoReply(env, message) {
   if (!secretaryEnabled(env) || !message?.business_connection_id || !message?.chat?.id || !message?.text) return;
   if (message.from?.is_bot) return;
@@ -730,6 +767,8 @@ async function secretaryAutoReply(env, message) {
   if (natural || slashQuery !== text) {
     return sendBusinessMessage(env, message, `${escapeHtml(query)} နဲ့ ကိုက်ညီတဲ့ စာအုပ်ကို catalog ထဲမှာ မတွေ့သေးပါဘူးရှင်။`);
   }
+  const faqAnswer = await findSecretaryFaq(env, text);
+  if (faqAnswer) return sendBusinessMessage(env, message, escapeHtml(faqAnswer));
   if (!env.AI_API_KEY) return sendBusinessMessage(env, message, secretaryFallback(message));
   const endpoint = env.AI_API_URL || "https://api.openai.com/v1/chat/completions";
   const catalogContext = rows.slice(0, 8).map((row) => `${row.title || ""} — ${row.author || ""} — ${row.link || ""}`).join("\n");
@@ -757,6 +796,8 @@ async function secretaryAutoReply(env, message) {
     return sendBusinessMessage(env, message, escapeHtml(answer));
   } catch (error) {
     console.error("Secretary auto reply failed", error?.message || "unknown error");
+    const openAiAnswer = await openAiSecretaryReply(env, text, catalogContext);
+    if (openAiAnswer) return sendBusinessMessage(env, message, escapeHtml(openAiAnswer));
     return sendBusinessMessage(env, message, secretaryFallback(message));
   } finally {
     clearTimeout(timeout);
@@ -1877,6 +1918,27 @@ async function handleCommand(env, message) {
       [{ text: "🔎 စာအုပ်ရှာမယ်", callback_data: "help_search" }, { text: "✍️ စာရေးသူများ", callback_data: "help_authors" }],
       [{ text: "📚 စာအုပ်များ", callback_data: "help_books" }, { text: "📊 အခြေအနေ", callback_data: "help_stats" }],
     ] } });
+  }
+  if (["/faqadd", "/faq", "/faqdel", "/faqlist"].includes(command)) {
+    if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
+    if (command === "/faqlist") {
+      const rows = await env.DB.prepare("SELECT id,trigger,answer FROM secretary_faq ORDER BY id DESC LIMIT 50").all();
+      if (!(rows.results || []).length) return reply("FAQ မထည့်ရသေးပါ။");
+      return reply(`<b>Secretary FAQ (${rows.results.length})</b>\n\n${rows.results.map((row) => `<code>${row.id}</code>. <b>${escapeHtml(row.trigger)}</b>\n${escapeHtml(row.answer)}`).join("\n\n")}`);
+    }
+    if (command === "/faqdel") {
+      const id = Number(args[0]);
+      if (!Number.isInteger(id)) return reply("သုံးပုံ: <code>/faqdel 1</code>");
+      await env.DB.prepare("DELETE FROM secretary_faq WHERE id=?").bind(id).run();
+      return reply(`✅ FAQ #${id} ကို ဖျက်ပြီးပါပြီ။`);
+    }
+    const separator = text.indexOf("|");
+    if (separator < 0) return reply("သုံးပုံ: <code>/faqadd မေးခွန်းအပိုင်း | ပြန်ဖြေစေချင်တဲ့စာ</code>\nဥပမာ: <code>/faqadd စာအုပ်ဖိုင်ရလား | ရပါတယ်ရှင်။ စာအုပ်နာမည်လေး ပြောပေးပါနော်။</code>");
+    const trigger = text.slice(rawCommand.length, separator).trim().replace(/\s+/gu, " ");
+    const answer = text.slice(separator + 1).trim();
+    if (trigger.length < 2 || answer.length < 2 || trigger.length > 200 || answer.length > 3500) return reply("မေးခွန်းအပိုင်း ၂–၂၀၀ လုံး၊ အဖြေ ၂–၃၅၀၀ လုံးအတွင်း ထည့်ပေးပါ။");
+    await env.DB.prepare("INSERT INTO secretary_faq(trigger,answer,created_at) VALUES(?,?,?) ON CONFLICT(trigger) DO UPDATE SET answer=excluded.answer,created_at=excluded.created_at").bind(trigger, answer, Math.floor(Date.now() / 1000)).run();
+    return reply(`✅ FAQ သိမ်းပြီးပါပြီ။\nမေးခွန်း: <b>${escapeHtml(trigger)}</b>\nအဖြေ: ${escapeHtml(answer)}`);
   }
   if (command === "/add") {
     if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
