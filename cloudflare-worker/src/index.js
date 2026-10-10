@@ -854,12 +854,15 @@ async function probeAiProvider(endpoint, key, model) {
 
 async function secretaryAutoReply(env, message) {
   if (!secretaryEnabled(env) || !message?.business_connection_id || !message?.chat?.id || !message?.text) return;
-  if (message.from?.is_bot) return;
+  if (message.from?.is_bot || message.sender_business_bot) return;
   console.log("Secretary business message received", message.chat.id, String(message.text).slice(0, 120));
   const connection = await env.DB.prepare(
-    "SELECT can_reply,is_enabled FROM business_connections WHERE connection_id=?"
+    "SELECT user_id,can_reply,is_enabled FROM business_connections WHERE connection_id=?"
   ).bind(String(message.business_connection_id)).first();
   if (connection && (!Number(connection.is_enabled) || !Number(connection.can_reply))) return;
+  // Telegram may deliver the owner's own outgoing business message as business_message.
+  // Never draft or send an AI reply to the owner themselves.
+  if (connection?.user_id && String(connection.user_id) === String(message.from?.id || "")) return;
   if (!(await allowSecretaryReply(env, message))) return;
   const text = String(message.text).trim();
   await sendBusinessTyping(env, message);
