@@ -862,7 +862,8 @@ async function secretaryAutoReply(env, message) {
   if (connection && (!Number(connection.is_enabled) || !Number(connection.can_reply))) return;
   // Telegram may deliver the owner's own outgoing business message as business_message.
   // Never draft or send an AI reply to the owner themselves.
-  if (connection?.user_id && String(connection.user_id) === String(message.from?.id || "")) return;
+  const senderId = String(message.from?.id || "");
+  if ((connection?.user_id && String(connection.user_id) === senderId) || (secretaryOwnerId(env) && secretaryOwnerId(env) === senderId)) return;
   if (!(await allowSecretaryReply(env, message))) return;
   const text = String(message.text).trim();
   await sendBusinessTyping(env, message);
