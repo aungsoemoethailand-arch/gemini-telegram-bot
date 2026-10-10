@@ -2055,7 +2055,45 @@ async function handleCommand(env, message) {
     return reply(`<b>AI provider test</b>\nGemini: <code>${escapeHtml(gemini)}</code>\nGroq/Qwen: <code>${escapeHtml(groq)}</code>\nChatGPT: <code>${escapeHtml(openai)}</code>`);
   }
   if (command === "/start" || command === "/help") {
-    return reply("<b>📚 စာအုပ်ရှာဖွေရေး Bot</b>\n\nအောက်က menu ကနေ ရွေးနိုင်ပါတယ်ရှင်။", { reply_markup: { inline_keyboard: [
+    return reply(`<b>📚 စာအုပ်ရှာဖွေရေး Bot — အသုံးပြုနည်း</b>
+
+<b>🔎 စာအုပ်ရှာရန်</b>
+<code>/search စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ</code>
+<code>/find စာအုပ်နာမည် သို့မဟုတ် စာရေးသူ</code>
+စာရေးသူ/စာအုပ်နာမည်ကို တိုက်ရိုက်ပို့ပြီးလည်း ရှာနိုင်ပါတယ်။
+<code>/authors</code> — စာရေးသူစာရင်း
+<code>/books</code> — စာအုပ်စာရင်း
+<code>/stats</code> — catalog အခြေအနေ
+
+<b>💾 Offline အမေးအဖြေ (FAQ)</b>
+AI မလိုဘဲ အရင်သတ်မှတ်ထားတဲ့အဖြေကို ချက်ချင်းပြန်စေဖို့ သုံးပါတယ်။ Owner ရဲ့ private DM မှာပဲ သုံးနိုင်ပါတယ်။
+<code>/faqadd မေးခွန်း | ပြန်ဖြေစေချင်တဲ့စာ</code>
+ဥပမာ — <code>/faqadd စာအုပ်ဖိုင်ရလား | ရပါတယ်ရှင်။ စာအုပ်နာမည်လေး ပြောပေးပါနော်။</code>
+<code>/faqlist</code> — ထည့်ထားတဲ့ FAQ အားလုံးကြည့်ရန်
+<code>/faqdel ID</code> — FAQ ဖျက်ရန် (ဥပမာ <code>/faqdel 3</code>)
+<code>/faq</code> — <code>/faqadd</code> နဲ့ အတူတူ
+
+<b>👤 Owner/Admin</b>
+<code>/myid</code> — ကိုယ့် Telegram ID ကြည့်ရန်
+<code>/aicheck</code> — Gemini/Groq/ChatGPT status စစ်ရန်
+<code>/refreshwebhook</code> — webhook refresh လုပ်ရန်
+<code>/add ID သို့မဟုတ် @username</code> — bot admin ထည့်ရန်
+<code>/admins</code> — bot admin စာရင်း
+<code>/usercount</code> / <code>/users</code> — user အရေအတွက်
+<code>/connects</code> — Secretary connection စာရင်း
+<code>/merge နာမည်၁+နာမည်၂</code> — ကလောင်အမည်များ ချိတ်ရန်
+<code>/delete စာအုပ်နာမည်</code> — catalog စာအုပ်ဖျက်ရန်
+
+<b>🛡️ Group စီမံခန့်ခွဲမှု</b>
+<code>/rules</code> — group စည်းကမ်းကြည့်ရန်
+<code>/setrules စည်းကမ်းစာ</code> — စည်းကမ်းသတ်မှတ်ရန်
+<code>/clearrules</code> — စည်းကမ်းဖျက်ရန်
+<code>/report</code> — message ကို report လုပ်ရန်
+<code>/purge</code> — reply လုပ်ထားသော message များဖျက်ရန်
+<code>/ban</code>, <code>/unban</code>, <code>/kick</code>, <code>/remove</code>
+<code>/mute</code>, <code>/unmute</code>, <code>/warn</code>, <code>/unwarn</code>
+
+Group ထဲမှာတော့ catalog ထဲက စာရေးသူ/စာအုပ်နာမည်ကိုက်မှသာ bot က reply ပြန်ပါတယ်။`, { reply_markup: { inline_keyboard: [
       [{ text: "🔎 စာအုပ်ရှာမယ်", callback_data: "help_search" }, { text: "✍️ စာရေးသူများ", callback_data: "help_authors" }],
       [{ text: "📚 စာအုပ်များ", callback_data: "help_books" }, { text: "📊 အခြေအနေ", callback_data: "help_stats" }],
     ] } });
