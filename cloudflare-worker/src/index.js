@@ -2075,6 +2075,8 @@ AI မလိုဘဲ အရင်သတ်မှတ်ထားတဲ့အဖ�
 
 <b>👤 Owner/Admin</b>
 <code>/myid</code> — ကိုယ့် Telegram ID ကြည့်ရန်
+<code>/id</code> — Member message ကို reply လုပ်ပြီး member ID ကြည့်ရန်
+<code>/gpid</code> — ဒီ group ရဲ့ Telegram ID ကြည့်ရန်
 <code>/aicheck</code> — Gemini/Groq/ChatGPT status စစ်ရန်
 <code>/refreshwebhook</code> — webhook refresh လုပ်ရန်
 <code>/add ID သို့မဟုတ် @username</code> — bot admin ထည့်ရန်
@@ -2085,6 +2087,9 @@ AI မလိုဘဲ အရင်သတ်မှတ်ထားတဲ့အဖ�
 <code>/delete စာအုပ်နာမည်</code> — catalog စာအုပ်ဖျက်ရန်
 
 <b>🛡️ Group စီမံခန့်ခွဲမှု</b>
+Admin command များကို target member message ကို reply လုပ်ပြီး သုံးနိုင်ပါတယ်။
+<code>/ban</code>, <code>/kick</code>, <code>/mute 1h</code>
+သို့မဟုတ် <code>/ban @username</code>, <code>/mute @username 2h</code>
 <code>/rules</code> — group စည်းကမ်းကြည့်ရန်
 <code>/setrules စည်းကမ်းစာ</code> — စည်းကမ်းသတ်မှတ်ရန်
 <code>/clearrules</code> — စည်းကမ်းဖျက်ရန်
@@ -2152,7 +2157,7 @@ Group ထဲမှာတော့ catalog ထဲက စာရေးသူ/စာ
     const row = await env.DB.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN username <> '' THEN 1 ELSE 0 END) AS with_username, MAX(updated_at) AS last_active FROM known_users").first();
     return reply(`<b>👥 Bot အသုံးပြုသူစာရင်း</b>\n\nစုစုပေါင်း message ပို့ဖူးသူ: <b>${Number(row?.total || 0)}</b> ယောက်\nUsername ရှိသူ: <b>${Number(row?.with_username || 0)}</b> ယောက်\nနောက်ဆုံး activity: <code>${escapeHtml(row?.last_active || "မရှိသေးပါ")}</code>\n\n<i>ဒီအရေအတွက်က bot ကို message ပို့ဖူးသူတွေကိုပဲ တွက်ထားတာပါ။ Group member အားလုံးကို မတွက်ထားပါ။</i>`);
   }
-  if (["ban", "unban", "kick", "remove", "mute", "unmute"].includes(command)) {
+  if (["/ban", "/unban", "/kick", "/remove", "/mute", "/unmute"].includes(command)) {
     if (await moderateMember(env, message, command.slice(1), args)) return null;
   }
   if (command === "/search" || command === "/find") {
@@ -2175,6 +2180,15 @@ Group ထဲမှာတော့ catalog ထဲက စာရေးသူ/စာ
   if (command === "/author") return handleCommand(env, { ...message, text: "/authors" });
   if (command === "/myid") {
     return reply(`Your Telegram ID: <code>${escapeHtml(message.from?.id || "မသိပါ")}</code>\nUsername: ${message.from?.username ? `@${escapeHtml(message.from.username)}` : "(မရှိပါ)"}`);
+  }
+  if (command === "/gpid") {
+    if (!isGroupMessage(message)) return reply("/gpid ကို group ထဲမှာပဲ သုံးနိုင်ပါတယ်ရှင်။");
+    return reply(`ဒီ Group ရဲ့ Telegram ID: <code>${escapeHtml(message.chat?.id || "မသိပါ")}</code>\nGroup name: ${escapeHtml(message.chat?.title || "မသိပါ")}`);
+  }
+  if (command === "/id") {
+    const target = message.reply_to_message?.from;
+    if (!target?.id) return reply("Member ရဲ့ message ကို reply လုပ်ပြီး <code>/id</code> ရိုက်ပါရှင်။");
+    return reply(`Member Telegram ID: <code>${escapeHtml(target.id)}</code>\nUsername: ${target.username ? `@${escapeHtml(target.username)}` : "(မရှိပါ)"}\nName: ${escapeHtml([target.first_name, target.last_name].filter(Boolean).join(" ") || "မသိပါ")}`);
   }
   if (command === "/reset") return reply("စကားဝိုင်းမှတ်တမ်း မသိမ်းထားတဲ့ catalog bot ဖြစ်လို့ reset လုပ်စရာ မရှိပါ။");
   if (command === "/allow" || command === "/remove") {
