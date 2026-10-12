@@ -1816,6 +1816,41 @@ function parseMuteSeconds(value) {
   return Math.min(30 * 86400, amount * ({ m: 60, h: 3600, d: 86400 }[(match[2] || "m").toLowerCase()] || 60));
 }
 
+function foreignScriptMatch(text) {
+  const value = String(text || "");
+  const scripts = [
+    { name: "တရုတ်", pattern: /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/gu },
+    { name: "ရုရှား", pattern: /[\u0400-\u04ff]/gu },
+    { name: "မွန်ဂိုလီးယား", pattern: /[\u1800-\u18af]/gu },
+  ];
+  for (const script of scripts) {
+    const count = value.match(script.pattern)?.length || 0;
+    if (count >= 6) return { name: script.name, count };
+  }
+  return null;
+}
+
+async function autoBanForeignScriptMessage(env, message) {
+  if (!isGroupMessage(message) || !message?.from?.id || message.from.is_bot) return false;
+  if (message.sender_chat?.id) return false;
+  const match = foreignScriptMatch(message.text || message.caption || "");
+  if (!match) return false;
+  // Never auto-ban a group administrator or a configured bot admin.
+  if (await isAuthorizedGroupAdmin(env, message)) return false;
+  try {
+    await telegram(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id });
+  } catch (error) {
+    console.log("Foreign-script message delete skipped", error?.message || "unknown error");
+  }
+  try {
+    await telegram(env, "banChatMember", { chat_id: message.chat.id, user_id: message.from.id, revoke_messages: true });
+    await auditAction(env, message, "auto_ban_foreign_script", message.from.id, `${match.name}; ${match.count} characters`);
+  } catch (error) {
+    console.log("Foreign-script auto-ban failed", error?.message || "unknown error");
+  }
+  return true;
+}
+
 async function moderateMember(env, message, command, args) {
   if (!isGroupMessage(message)) { await sendMessage(env, message.chat.id, "ဒီ command ကို group ထဲမှာပဲ သုံးနိုင်ပါတယ်။"); return true; }
   if (!(await isAuthorizedGroupAdmin(env, message))) { await sendMessage(env, message.chat.id, "ဒီ moderation command ကို group admin သို့မဟုတ် bot admin ပဲ သုံးနိုင်ပါတယ်။"); return true; }
@@ -2229,6 +2264,7 @@ async function handleMessage(env, message) {
   if (!message?.chat?.is_direct_messages) await Promise.all([rememberChat(env, message.chat), rememberUser(env, message.from)]);
   if (text.startsWith("/")) return handleCommand(env, message);
   const isGroup = ["group", "supergroup"].includes(message.chat?.type);
+  if (isGroup && await autoBanForeignScriptMessage(env, message)) return;
   const replyTarget = message.reply_to_message;
   let botMentioned = false;
   let queryText = text;
