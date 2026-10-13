@@ -1225,6 +1225,26 @@ async function importChannelPost(env, post) {
 }
 
 let authorAliasCache = null;
+let allowedLinkDomainCache = null;
+
+function normalizeAllowedLinkDomain(value) {
+  let raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    return parsed.hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return raw.replace(/^https?:\/\//i, "").split(/[/?#]/, 1)[0].replace(/^www\./, "");
+  }
+}
+
+async function loadAllowedLinkDomains(env, refresh = false) {
+  if (!refresh && allowedLinkDomainCache && allowedLinkDomainCache.expiresAt > Date.now()) return allowedLinkDomainCache.domains;
+  const result = await env.DB.prepare("SELECT domain FROM allowed_link_domains").all();
+  const domains = new Set((result.results || []).map((row) => normalizeAllowedLinkDomain(row.domain)).filter(Boolean));
+  allowedLinkDomainCache = { expiresAt: Date.now() + 60_000, domains };
+  return domains;
+}
 
 async function loadAuthorAliasData(env, refresh = false) {
   if (!refresh && authorAliasCache && authorAliasCache.expiresAt > Date.now()) return authorAliasCache.data;
@@ -2001,7 +2021,7 @@ function telegramPathAllowed(url) {
   return Boolean(match && match[1].toLowerCase() === "thebookr");
 }
 
-function linkAllowed(url) {
+async function linkAllowed(env, url) {
   try {
     const parsed = new URL(String(url).trim());
     const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
@@ -2011,6 +2031,8 @@ function linkAllowed(url) {
     if (host === "tiktok.com" || host.endsWith(".tiktok.com")) return true;
     if (host === "saroatsin.com" || host.endsWith(".saroatsin.com")) return true;
     if (host === "whispermmepub.github.io" && parsed.pathname.toLowerCase().startsWith("/review/")) return true;
+    const allowedDomains = await loadAllowedLinkDomains(env);
+    if ([...allowedDomains].some((domain) => host === domain || host.endsWith(`.${domain}`))) return true;
     return telegramPathAllowed(url);
   } catch {
     return false;
@@ -2039,7 +2061,8 @@ async function enforceForwardPolicy(env, message) {
   const telegramLinks = links.filter((link) => /(?:https?:\/\/)?(?:www\.)?t\.me\//i.test(link));
   const fromOtherChat = Boolean(origin && originUsername !== "thebookr");
   const hasOtherTelegramLink = telegramLinks.some((link) => !telegramPathAllowed(link));
-  const hasDisallowedLink = links.some((link) => !linkAllowed(link));
+  const linkResults = await Promise.all(links.map(async (link) => ({ link, allowed: await linkAllowed(env, link) })));
+  const hasDisallowedLink = linkResults.some((item) => !item.allowed);
   const allowedBookRForward = Boolean(origin && originUsername === "thebookr");
   if (allowedBookRForward || (!fromOtherChat && !hasOtherTelegramLink && !hasDisallowedLink)) return false;
   try { await telegram(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }); } catch (error) { console.log("Policy delete failed", error?.message || "unknown error"); }
@@ -2120,6 +2143,9 @@ AI မလိုဘဲ အရင်သတ်မှတ်ထားတဲ့အဖ�
 <code>/connects</code> — Secretary connection စာရင်း
 <code>/merge နာမည်၁+နာမည်၂</code> — ကလောင်အမည်များ ချိတ်ရန်
 <code>/delete စာအုပ်နာမည်</code> — catalog စာအုပ်ဖျက်ရန်
+<code>/linkallow https://example.com</code> — group မှာ link domain ခွင့်ပြုရန်
+<code>/linkallows</code> — ခွင့်ပြုထားသော link domain စာရင်းကြည့်ရန်
+<code>/linkdel https://example.com</code> — ခွင့်ပြု link domain ဖျက်ရန်
 
 <b>🛡️ Group စီမံခန့်ခွဲမှု</b>
 Admin command များကို target member message ကို reply လုပ်ပြီး သုံးနိုင်ပါတယ်။
@@ -2158,6 +2184,24 @@ Group ထဲမှာတော့ catalog ထဲက စာရေးသူ/စာ
     if (trigger.length < 2 || answer.length < 2 || trigger.length > 200 || answer.length > 3500) return reply("မေးခွန်းအပိုင်း ၂–၂၀၀ လုံး၊ အဖြေ ၂–၃၅၀၀ လုံးအတွင်း ထည့်ပေးပါ။");
     await env.DB.prepare("INSERT INTO secretary_faq(trigger,answer,created_at) VALUES(?,?,?) ON CONFLICT(trigger) DO UPDATE SET answer=excluded.answer,created_at=excluded.created_at").bind(trigger, answer, Math.floor(Date.now() / 1000)).run();
     return reply(`✅ FAQ သိမ်းပြီးပါပြီ။\nမေးခွန်း: <b>${escapeHtml(trigger)}</b>\nအဖြေ: ${escapeHtml(answer)}`);
+  }
+  if (["/linkallow", "/linkallows", "/linkdel"].includes(command)) {
+    if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner/admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
+    if (command === "/linkallows") {
+      const rows = await env.DB.prepare("SELECT domain,created_at FROM allowed_link_domains ORDER BY domain").all();
+      if (!(rows.results || []).length) return reply("ခွင့်ပြုထားတဲ့ link domain မရှိသေးပါ။");
+      return reply(`<b>🔗 ခွင့်ပြုထားသော link domain များ</b>\n\n${rows.results.map((row, index) => `${index + 1}. <code>${escapeHtml(row.domain)}</code>`).join("\n")}`);
+    }
+    const domain = normalizeAllowedLinkDomain(args[0] || query);
+    if (!domain || !domain.includes(".")) return reply(`သုံးပုံ: <code>${command} https://example.com</code>`);
+    if (command === "/linkdel") {
+      await env.DB.prepare("DELETE FROM allowed_link_domains WHERE domain=?").bind(domain).run();
+      await loadAllowedLinkDomains(env, true);
+      return reply(`✅ ခွင့်ပြု link ထဲက <code>${escapeHtml(domain)}</code> ကို ဖျက်ပြီးပါပြီ။`);
+    }
+    await env.DB.prepare("INSERT OR IGNORE INTO allowed_link_domains(domain,added_by,created_at) VALUES(?,?,?)").bind(domain, String(message.from?.id || ""), Math.floor(Date.now() / 1000)).run();
+    await loadAllowedLinkDomains(env, true);
+    return reply(`✅ <code>${escapeHtml(domain)}</code> ကို group link ခွင့်ပြုစာရင်းထဲ ထည့်ပြီးပါပြီ။`);
   }
   if (command === "/add") {
     if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
