@@ -2064,7 +2064,9 @@ async function enforceForwardPolicy(env, message) {
   const linkResults = await Promise.all(links.map(async (link) => ({ link, allowed: await linkAllowed(env, link) })));
   const hasDisallowedLink = linkResults.some((item) => !item.allowed);
   const allowedBookRForward = Boolean(origin && originUsername === "thebookr");
-  if (allowedBookRForward || (!fromOtherChat && !hasOtherTelegramLink && !hasDisallowedLink)) return false;
+  // An allowed external link remains allowed even when the message was forwarded
+  // from another channel. Keep blocking unrelated channel forwards and links.
+  if (allowedBookRForward || (!hasOtherTelegramLink && !hasDisallowedLink)) return false;
   try { await telegram(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }); } catch (error) { console.log("Policy delete failed", error?.message || "unknown error"); }
   const now = Math.floor(Date.now() / 1000);
   await env.DB.prepare("INSERT INTO forward_violations(group_chat_id,user_id,count,last_violation) VALUES(?,?,1,?) ON CONFLICT(group_chat_id,user_id) DO UPDATE SET count=count+1,last_violation=excluded.last_violation")
