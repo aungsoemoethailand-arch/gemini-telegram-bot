@@ -102,6 +102,33 @@ function normalize(value) {
     .replace(/[\s\-–—_.,၊။:;!?()[\]{}"'`/\\|+*=<>၊။၊]+/gu, "");
 }
 
+const CATEGORY_SEARCH_ALIASES = [
+  ["philosophy", "အတွေးအခေါ်"],
+  ["အတွေးအခေါ်စာပေ", "အတွေးအခေါ်"],
+  ["ရသစာပေ", "ရသ"],
+  ["ဘာသာပြန်စာပေ", "ဘာသာပြန်"],
+  ["ဘာသာရေးစာပေ", "ဘာသာရေး"],
+  ["တိုးတက်ရေးစာပေ", "တိုးတက်ရေး"],
+  ["သမိုင်းစာပေ", "သမိုင်းနောက်ခံ"],
+  ["သမိုင်းနောက်ခံစာပေ", "သမိုင်းနောက်ခံ"],
+  ["ဟာသစာပေ", "ဟာသ"],
+  ["ကဗျာစာပေ", "ကဗျာ"],
+  ["ဝတ္ထုတိုစာပေ", "ဝတ္ထုတိုများ"],
+  ["အတ္ထုပတ္တိစာပေ", "အတ္ထုပတ္တိ"],
+  ["နိုင်ငံရေးစာပေ", "နိုင်ငံရေး"],
+];
+
+function categorySearchNeedle(value) {
+  let compact = normalize(value);
+  for (const [alias, canonical] of CATEGORY_SEARCH_ALIASES.sort((a, b) => normalize(b[0]).length - normalize(a[0]).length)) {
+    if (compact.includes(normalize(alias))) return normalize(canonical);
+  }
+  compact = compact
+    .replace(/(?:စာအုပ်များ|စာအုပ်တွေ|စာအုပ်များကို|စာအုပ်တွေကို|စာအုပ်|စာပေ|တွေ|များ|များကို|ရှိလား|ရှိမရှိ|ပေးပါ|ပေး|ရှာပေး)/gu, "")
+    .trim();
+  return compact;
+}
+
 function extractNaturalSearchQuery(text) {
   const original = String(text || "").trim();
   if (!original || original.startsWith("/")) return null;
@@ -1339,6 +1366,7 @@ async function searchBooks(env, query) {
     bookRowsCacheAt = now;
   }
   const needle = normalize(query);
+  const categoryNeedle = categorySearchNeedle(query);
   const parts = String(query || "").split(/\s+/).map(normalize).filter(Boolean);
   const aliases = await loadAuthorAliasData(env);
   const queryGroup = aliases.byKey.get(needle)?.group_id || "";
@@ -1346,7 +1374,7 @@ async function searchBooks(env, query) {
     if (entry.isReview) return false;
     const combined = `${entry.author}${entry.title}${entry.category}`;
     const authorGroup = aliases.byKey.get(entry.author)?.group_id || "";
-    return entry.author.includes(needle) || entry.title.includes(needle) || entry.category.includes(needle) || (queryGroup && authorGroup === queryGroup) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
+    return entry.author.includes(needle) || entry.title.includes(needle) || entry.category.includes(needle) || (categoryNeedle && entry.category === categoryNeedle) || (queryGroup && authorGroup === queryGroup) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
   }).map((entry) => entry.row).slice(0, MAX_BOOK_RESULTS);
 }
 
@@ -1410,6 +1438,7 @@ async function handleInlineQuery(env, inlineQuery) {
 
 async function searchExactBook(env, query) {
   const needle = normalize(query);
+  const categoryNeedle = categorySearchNeedle(query);
   const now = Date.now();
   if (!bookRowsCache || now - bookRowsCacheAt > 30000) {
     const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
@@ -1422,7 +1451,7 @@ async function searchExactBook(env, query) {
   return bookSearchEntriesCache.filter((entry) => {
     if (entry.isReview) return false;
     const authorGroup = aliases.byKey.get(entry.author)?.group_id || "";
-    return entry.author === needle || entry.title === needle || entry.category === needle || (queryGroup && authorGroup === queryGroup);
+    return entry.author === needle || entry.title === needle || entry.category === needle || (categoryNeedle && entry.category === categoryNeedle) || (queryGroup && authorGroup === queryGroup);
   }).map((entry) => entry.row).slice(0, MAX_BOOK_RESULTS);
 }
 
