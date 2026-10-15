@@ -93,9 +93,24 @@ function userMention(user) {
   return `<a href="tg://user?id=${user.id}">${escapeHtml(name)}</a>`;
 }
 
+function normalizeMyanmarInput(value) {
+  let text = String(value ?? "").normalize("NFKC");
+
+  // iOS/Android Myanmar keyboards can place the ေ vowel before the base
+  // consonant, while the catalog may contain the canonical base+medial+ေ
+  // order. Make both forms compare equally without changing displayed text.
+  text = text.replace(/\u1031([\u1000-\u1021])([\u103b-\u103e]*)/gu, "$1$2\u1031");
+  text = text.replace(/\u1031{2,}/gu, "\u1031");
+
+  // Common keyboard spelling/order variants for Myanmar combining marks.
+  text = text
+    .replace(/\u103a\u1037/gu, "\u1037\u103a")
+    .replace(/\u1037\u1038/gu, "\u1038\u1037");
+  return text;
+}
+
 function normalize(value) {
-  return String(value ?? "")
-    .normalize("NFKC")
+  return normalizeMyanmarInput(value)
     .replace(/[\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g, "")
     .replace(/[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu, "")
     .toLowerCase()
