@@ -1,3 +1,5 @@
+import Rabbit from "rabbit-node";
+
 const MAX_BOOK_RESULTS = 40;
 
 const SEARCH_INTROS = [
@@ -94,7 +96,13 @@ function userMention(user) {
 }
 
 function normalizeMyanmarInput(value) {
-  let text = String(value ?? "").normalize("NFKC");
+  let text = String(value ?? "");
+
+  // Convert text containing Zawgyi-only code points before Unicode cleanup.
+  // Do not run this on ordinary Unicode text: the converter is intentionally
+  // gated because blindly converting Unicode damages valid Burmese text.
+  if (/[\u105A\u1060-\u109F]/u.test(text)) text = Rabbit.zg2uni(text);
+  text = text.normalize("NFKC");
 
   // iOS/Android Myanmar keyboards can place the ေ vowel before the base
   // consonant, while the catalog may contain the canonical base+medial+ေ
