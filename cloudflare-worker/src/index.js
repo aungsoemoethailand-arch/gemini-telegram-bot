@@ -174,7 +174,7 @@ async function reviewMatches(query) {
 async function localReviewMatches(env, query) {
   const cleanedQuery = String(query || "").replace(/(?:အကြောင်းအရာ|အညွှန်း|အကြောင်း|review|summary|ဘာလဲ)/gi, " ").trim();
   const needle = normalize(cleanedQuery);
-  const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
+  const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
   return (rows.results || []).filter((row) => {
     const raw = String(row.raw_text || "");
     return isReviewRecord(row) && (normalize(row.author).includes(needle) || normalize(row.title).includes(needle) || normalize(raw).includes(needle));
@@ -197,23 +197,16 @@ function extractEpubRecord(post) {
   const caption = String(post?.caption || "").trim();
   const baseName = fileName.replace(/\.epub$/iu, "").replace(/[._]+/gu, " ").replace(/\s+/gu, " ").trim();
   const source = caption || baseName;
-  const cleaned = source
-    .replace(/https?:\/\/\S+/giu, " ")
-    .replace(/^\s*(?:စာအုပ်နာမည်|စာအုပ်အမည်|title|book)\s*[:：-]\s*/iu, "")
-    .replace(/\s+/gu, " ")
-    .trim();
-  const labelledTitle = cleaned.match(/(?:စာအုပ်နာမည်|စာအုပ်အမည်|title|book)\s*[:：]\s*(.+?)(?=\s+(?:စာရေးသူ|author)\s*[:：]|$)/iu)?.[1]?.trim();
-  const labelledAuthor = cleaned.match(/(?:စာရေးသူ|author)\s*[:：]\s*(.+)$/iu)?.[1]?.trim();
-  let title = labelledTitle || "";
-  let author = labelledAuthor || "";
-  if (!title || !author) {
-    const parts = cleaned.split(/\s+[-–—|]\s+/u).map((part) => part.trim()).filter(Boolean);
-    title ||= parts[0] || baseName;
-    author ||= parts[1] || "";
-  }
-  return { author, title, link: channelPostLink(post.chat, post.message_id) };
+  const cleaned = source.replace(/https?:\/\/\S+/giu, " ").replace(/\s+/gu, " ").trim();
+  const labelledTitle = cleaned.match(/(?:စာအုပ်နာမည်|စာအုပ်အမည်|title|book)\s*[:：-]\s*(.+?)(?=\s+(?:စာရေးသူ|author|စာအုပ်အမျိုးအစား|စာပေအမျိုးအစား|အမျိုးအစား|category|genre)\s*[:：-]|$)/iu)?.[1]?.trim();
+  const labelledAuthor = cleaned.match(/(?:စာရေးသူ|author)\s*[:：-]\s*(.+?)(?=\s+(?:စာအုပ်အမျိုးအစား|စာပေအမျိုးအစား|အမျိုးအစား|category|genre)\s*[:：-]|$)/iu)?.[1]?.trim();
+  const labelledCategory = cleaned.match(/(?:စာအုပ်အမျိုးအစား|စာပေအမျိုးအစား|အမျိုးအစား|category|genre)\s*[:：-]\s*(.+)$/iu)?.[1]?.trim();
+  const parts = splitMetadataParts(cleaned);
+  const title = labelledTitle || parts[0] || baseName;
+  const author = labelledAuthor || parts[1] || "";
+  const category = normalizeBookCategory(labelledCategory || parts[2] || "");
+  return { author, title, category, link: channelPostLink(post.chat, post.message_id) };
 }
-
 function isGroupMessage(message) {
   return ["group", "supergroup"].includes(message?.chat?.type);
 }
@@ -456,6 +449,25 @@ function parseCsvLine(line) {
   return cells;
 }
 
+function splitMetadataParts(value) {
+  return String(value || "")
+    .replace(/\r?\n/gu, " ")
+    .split(/\s*[-–—|]\s*/u)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function cleanMetadataLink(value, fallbackLink = "") {
+  return String(value || "").match(/https?:\/\/\S+/iu)?.[0]?.replace(/[\])}>,။၊]+$/u, "") || fallbackLink;
+}
+
+function normalizeBookCategory(value) {
+  return String(value || "")
+    .replace(/^(?:စာအုပ်အမျိုးအစား|စာပေအမျိုးအစား|အမျိုးအစား|category|genre)\s*[:：-]\s*/iu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
 function extractRecords(text, fallbackLink = "") {
   const clean = String(text || "").trim();
   if (!clean) return [];
@@ -464,34 +476,39 @@ function extractRecords(text, fallbackLink = "") {
     const header = parseCsvLine(lines[0]).map((x) => x.toLowerCase());
     const authorIndex = header.findIndex((x) => ["author", "စာရေးသူ"].includes(x));
     const titleIndex = header.findIndex((x) => ["title", "book", "စာအုပ်နာမည်", "စာအုပ်အမည်"].includes(x));
+    const categoryIndex = header.findIndex((x) => ["category", "genre", "စာအုပ်အမျိုးအစား", "စာပေအမျိုးအစား", "အမျိုးအစား"].includes(x));
     const linkIndex = header.findIndex((x) => ["link", "url", "စာအုပ်လင့်", "လင့်"].includes(x));
     if (authorIndex >= 0 && titleIndex >= 0 && linkIndex >= 0) {
       return lines.slice(1).map(parseCsvLine).map((row) => ({
         author: row[authorIndex] || "",
         title: row[titleIndex] || "",
-        link: row[linkIndex] || fallbackLink,
+        category: normalizeBookCategory(row[categoryIndex] || ""),
+        link: cleanMetadataLink(row[linkIndex], fallbackLink),
       })).filter((x) => x.author || x.title || x.link);
     }
   }
-  const url = clean.match(/https?:\/\/\S+/)?.[0]?.replace(/[\])}>,။၊]+$/, "") || fallbackLink;
-  let author = "";
-  let title = "";
-  for (const line of lines) {
-    const authorMatch = line.match(/^(?:စာရေးသူ|author)\s*[:：-]\s*(.+)$/i);
-    const titleMatch = line.match(/^(?:စာအုပ်နာမည်|စာအုပ်အမည်|title|book)\s*[:：-]\s*(.+)$/i);
-    if (authorMatch) author = authorMatch[1].trim();
-    if (titleMatch) title = titleMatch[1].trim();
-  }
-  if (!author || !title) {
-    const parts = clean.replace(/\r?\n/g, " ").split(/\s*[-–—|]\s*/);
-    if (parts.length >= 2) {
-      author ||= parts[0].trim();
-      title ||= parts[1].trim();
+  const url = cleanMetadataLink(clean, fallbackLink);
+  const labelledAuthor = clean.match(/(?:စာရေးသူ|author)\s*[:：-]\s*(.+?)(?=\s+(?:စာအုပ်နာမည်|စာအုပ်အမည်|title|book|စာအုပ်အမျိုးအစား|စာပေအမျိုးအစား|အမျိုးအစား|category|genre)\s*[:：-]|$)/iu)?.[1]?.trim();
+  const labelledTitle = clean.match(/(?:စာအုပ်နာမည်|စာအုပ်အမည်|title|book)\s*[:：-]\s*(.+?)(?=\s+(?:စာရေးသူ|author|စာအုပ်အမျိုးအစား|စာပေအမျိုးအစား|အမျိုးအစား|category|genre)\s*[:：-]|$)/iu)?.[1]?.trim();
+  const labelledCategory = clean.match(/(?:စာအုပ်အမျိုးအစား|စာပေအမျိုးအစား|အမျိုးအစား|category|genre)\s*[:：-]\s*(.+?)(?=\s+(?:စာအုပ်လင့်|လင့်|link|url)\s*[:：-]|$)/iu)?.[1]?.trim();
+  let author = labelledAuthor || "";
+  let title = labelledTitle || "";
+  let category = normalizeBookCategory(labelledCategory || "");
+  if (!author || !title || !category) {
+    const withoutUrl = clean.replace(/https?:\/\/\S+/giu, " ").trim();
+    const parts = splitMetadataParts(withoutUrl);
+    // Channel text format: author - title - category - link.
+    if (parts.length >= 3) {
+      author ||= parts[0];
+      title ||= parts[1];
+      category ||= normalizeBookCategory(parts[2]);
+    } else if (parts.length >= 2) {
+      author ||= parts[0];
+      title ||= parts[1];
     }
   }
-  return [{ author, title, link: url }];
+  return [{ author, title, category, link: url }];
 }
-
 function extractHashtagReview(text, fallbackLink = "") {
   const tags = String(text || "").match(/#([^\s#]+)/g)?.map((tag) => tag.slice(1)) || [];
   const reviewTags = new Set(["bookreview", "review", "စာအုပ်အညွှန်း"]);
@@ -985,15 +1002,16 @@ async function saveRecords(env, chatId, messageId, records, rawText) {
   records.forEach((record, recordNo) => {
     const author = record.author || "";
     const title = record.title || "";
+    const category = normalizeBookCategory(record.category || "");
     const link = record.link || messageLink(chatId, messageId);
     const createdAt = new Date().toISOString();
     statements.push(env.DB.prepare(
-      `INSERT INTO books(chat_id,message_id,record_no,author,title,link,raw_text,created_at)
-       VALUES(?,?,?,?,?,?,?,?)
+      `INSERT INTO books(chat_id,message_id,record_no,author,title,category,link,raw_text,created_at)
+       VALUES(?,?,?,?,?,?,?,?,?)
        ON CONFLICT(chat_id,message_id,record_no) DO UPDATE SET
-         author=excluded.author,title=excluded.title,link=excluded.link,
+         author=excluded.author,title=excluded.title,category=excluded.category,link=excluded.link,
          raw_text=excluded.raw_text,created_at=excluded.created_at`
-    ).bind(chatId, messageId, recordNo, author, title, link, rawText || "", createdAt));
+    ).bind(chatId, messageId, recordNo, author, title, category, link, rawText || "", createdAt));
     statements.push(env.DB.prepare(
       `INSERT INTO github_sync_outbox(chat_id,message_id,record_no,author,title,link,created_at)
        VALUES(?,?,?,?,?,?,?)
@@ -1315,9 +1333,9 @@ async function mergeAuthorAliases(env, inputNames) {
 async function searchBooks(env, query) {
   const now = Date.now();
   if (!bookRowsCache || now - bookRowsCacheAt > 30000) {
-    const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
+    const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
     bookRowsCache = rows.results || [];
-    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), title: normalize(row.title), isReview: isReviewRecord(row) }));
+    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), title: normalize(row.title), category: normalize(row.category), isReview: isReviewRecord(row) }));
     bookRowsCacheAt = now;
   }
   const needle = normalize(query);
@@ -1326,9 +1344,9 @@ async function searchBooks(env, query) {
   const queryGroup = aliases.byKey.get(needle)?.group_id || "";
   return bookSearchEntriesCache.filter((entry) => {
     if (entry.isReview) return false;
-    const combined = `${entry.author}${entry.title}`;
+    const combined = `${entry.author}${entry.title}${entry.category}`;
     const authorGroup = aliases.byKey.get(entry.author)?.group_id || "";
-    return entry.author.includes(needle) || entry.title.includes(needle) || (queryGroup && authorGroup === queryGroup) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
+    return entry.author.includes(needle) || entry.title.includes(needle) || entry.category.includes(needle) || (queryGroup && authorGroup === queryGroup) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
   }).map((entry) => entry.row).slice(0, MAX_BOOK_RESULTS);
 }
 
@@ -1356,7 +1374,7 @@ async function handleInlineQuery(env, inlineQuery) {
         title: title.slice(0, 128),
         description: author.slice(0, 128) || "စာရေးသူမသိ",
         input_message_content: {
-          message_text: `📖 <b>${escapeHtml(title)}</b>\n✍️ ${escapeHtml(author || "စာရေးသူမသိ")}`,
+          message_text: `📖 <b>${escapeHtml(title)}</b>\n✍️ ${escapeHtml(author || "စာရေးသူမသိ")}${book.category ? `\n🏷️ ${escapeHtml(book.category)}` : ""}`,
           parse_mode: "HTML",
           disable_web_page_preview: true,
         },
@@ -1394,9 +1412,9 @@ async function searchExactBook(env, query) {
   const needle = normalize(query);
   const now = Date.now();
   if (!bookRowsCache || now - bookRowsCacheAt > 30000) {
-    const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
+    const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
     bookRowsCache = rows.results || [];
-    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), title: normalize(row.title), isReview: isReviewRecord(row) }));
+    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), title: normalize(row.title), category: normalize(row.category), isReview: isReviewRecord(row) }));
     bookRowsCacheAt = now;
   }
   const aliases = await loadAuthorAliasData(env);
@@ -1404,7 +1422,7 @@ async function searchExactBook(env, query) {
   return bookSearchEntriesCache.filter((entry) => {
     if (entry.isReview) return false;
     const authorGroup = aliases.byKey.get(entry.author)?.group_id || "";
-    return entry.author === needle || entry.title === needle || (queryGroup && authorGroup === queryGroup);
+    return entry.author === needle || entry.title === needle || entry.category === needle || (queryGroup && authorGroup === queryGroup);
   }).map((entry) => entry.row).slice(0, MAX_BOOK_RESULTS);
 }
 
@@ -1558,7 +1576,7 @@ async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = fa
   const buttons = [];
   visible.forEach((row, index) => {
     const number = safePage * pageSize + index + 1;
-    lines.push(`\n<b>${number}. ${escapeHtml(row.title || "ခေါင်းစဉ်မရှိ")}</b>${row.author ? ` — ${escapeHtml(row.author)}` : ""}`);
+    lines.push(`\n<b>${number}. ${escapeHtml(row.title || "ခေါင်းစဉ်မရှိ")}</b>${row.author ? ` — ${escapeHtml(row.author)}` : ""}${row.category ? `\n🏷️ ${escapeHtml(row.category)}` : ""}`);
     if (row.link) buttons.push([{ text: `📖 ${`${number}. ${row.title || "စာအုပ်"}`.slice(0, 58)}`, url: row.link }]);
   });
   if (pageCount > 1) {
@@ -1576,7 +1594,7 @@ async function sendSearch(env, chatId, query, cleanup = {}, exact = false, speak
   const mention = speaker?.chatType && speaker.chatType !== "private" ? userMention(speaker.user) : "";
   const introIndex = nextSearchIntro(chatId);
   const rows = prefetchedRows || (exact ? await searchExactBook(env, query) : await searchBooks(env, query));
-  const sessionRows = rows.slice(0, MAX_BOOK_RESULTS).map((row) => ({ chat_id: row.chat_id, author: row.author, title: row.title, link: row.link }));
+  const sessionRows = rows.slice(0, MAX_BOOK_RESULTS).map((row) => ({ chat_id: row.chat_id, author: row.author, title: row.title, category: row.category || "", link: row.link }));
   const storedQuery = JSON.stringify({ query, exact, mention, introIndex, formatRequest, rows: sessionRows });
   searchSessionCache.set(token, storedQuery);
   if (searchSessionCache.size > 500) searchSessionCache.delete(searchSessionCache.keys().next().value);
@@ -1589,7 +1607,7 @@ async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId 
   const pageSize = 20;
   let items;
   if (kind === "authors") {
-    const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books WHERE author<>'' ORDER BY author LIMIT 2000").all();
+    const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books WHERE author<>'' ORDER BY author LIMIT 2000").all();
     const aliases = await loadAuthorAliasData(env);
     const counts = new Map();
     for (const row of rows.results || []) {
@@ -1601,7 +1619,7 @@ async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId 
     }
     items = [...counts.values()];
   } else {
-    const rows = await env.DB.prepare("SELECT chat_id,title,author,link,raw_text FROM books WHERE title<>'' ORDER BY title LIMIT 2000").all();
+    const rows = await env.DB.prepare("SELECT chat_id,title,author,category,link,raw_text FROM books WHERE title<>'' ORDER BY title LIMIT 2000").all();
     items = (rows.results || []).filter((row) => !isReviewRecord(row));
   }
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
@@ -1614,7 +1632,7 @@ async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId 
     if (kind === "authors") {
       lines.push(`\n<b>${safePage * pageSize + index + 1}. ${escapeHtml(row.author)}</b> — စာအုပ် ${row.count} အုပ်`);
     } else {
-      lines.push(`\n<b>${safePage * pageSize + index + 1}. ${escapeHtml(row.title)}</b>${row.author ? `\nစာရေးသူ: ${escapeHtml(row.author)}` : ""}`);
+      lines.push(`\n<b>${safePage * pageSize + index + 1}. ${escapeHtml(row.title)}</b>${row.author ? `\nစာရေးသူ: ${escapeHtml(row.author)}${row.category ? `\nအမျိုးအစား: ${escapeHtml(row.category)}` : ""}` : ""}`);
       if (row.link) {
         try {
           const bookUrl = new URL(String(row.link).trim());
@@ -1657,7 +1675,7 @@ async function catalogDeleteAllowed(env, message) {
 }
 
 async function findDeleteBooks(env, query = "") {
-  const rows = await env.DB.prepare("SELECT id,author,title,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
+  const rows = await env.DB.prepare("SELECT id,author,title,category,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
   const needle = normalize(query);
   const terms = String(query || "").split(/\s+/).map(normalize).filter(Boolean);
   return (rows.results || []).filter((row) => {
@@ -2140,6 +2158,7 @@ AI မလိုဘဲ အရင်သတ်မှတ်ထားတဲ့အဖ�
 <code>/aicheck</code> — Gemini/Groq/ChatGPT status စစ်ရန်
 <code>/refreshwebhook</code> — webhook refresh လုပ်ရန်
 <code>/add ID သို့မဟုတ် @username</code> — bot admin ထည့်ရန်
+<code>/add စာရေးသူ - စာအုပ်နာမည် - အမျိုးအစား - စာအုပ်လင့်</code> — စာအုပ်ထည့်ရန်
 <code>/admins</code> — bot admin စာရင်း
 <code>/usercount</code> / <code>/users</code> — user အရေအတွက်
 <code>/connects</code> — Secretary connection စာရင်း
@@ -2161,7 +2180,12 @@ Admin command များကို target member message ကို reply လု
 <code>/ban</code>, <code>/unban</code>, <code>/kick</code>, <code>/remove</code>
 <code>/mute</code>, <code>/unmute</code>, <code>/warn</code>, <code>/unwarn</code>
 
-Group ထဲမှာတော့ catalog ထဲက စာရေးသူ/စာအုပ်နာမည်ကိုက်မှသာ bot က reply ပြန်ပါတယ်။`, { reply_markup: { inline_keyboard: [
+<b>🏷️ စာအုပ်အမျိုးအစား</b>
+EPUB file caption/filename: <code>စာအုပ်နာမည် - စာရေးသူ - အမျိုးအစား</code>
+Channel text: <code>စာရေးသူ - စာအုပ်နာမည် - အမျိုးအစား - စာအုပ်လင့်</code>
+အမျိုးအစားနဲ့ရှာရန်: <code>/search ဘာသာပြန်</code>
+
+Group ထဲမှာတော့ catalog ထဲက စာရေးသူ/စာအုပ်နာမည်/အမျိုးအစား ကိုက်မှသာ bot က reply ပြန်ပါတယ်။`, { reply_markup: { inline_keyboard: [
       [{ text: "🔎 စာအုပ်ရှာမယ်", callback_data: "help_search" }, { text: "✍️ စာရေးသူများ", callback_data: "help_authors" }],
       [{ text: "📚 စာအုပ်များ", callback_data: "help_books" }, { text: "📊 အခြေအနေ", callback_data: "help_stats" }],
     ] } });
@@ -2207,6 +2231,13 @@ Group ထဲမှာတော့ catalog ထဲက စာရေးသူ/စာ
   }
   if (command === "/add") {
     if (message.chat.type !== "private" || !(await isAdmin(env, message.from))) return reply("ဒီ command ကို owner admin က private DM မှာပဲ သုံးနိုင်ပါတယ်။");
+    const addParts = splitMetadataParts(query);
+    if (addParts.length >= 4 && /https?:\/\/\S+/iu.test(addParts[3])) {
+      const link = cleanMetadataLink(addParts[3]);
+      const record = { author: addParts[0], title: addParts[1], category: normalizeBookCategory(addParts[2]), link };
+      await saveRecords(env, chatId, message.message_id, [record], query);
+      return reply(`✅ စာအုပ် catalog ထဲ ထည့်ပြီးပါပြီ။\n✍️ ${escapeHtml(record.author)}\n📖 ${escapeHtml(record.title)}\n🏷️ ${escapeHtml(record.category || "အမျိုးအစား မသတ်မှတ်ရသေးပါ")}`);
+    }
     const target = await resolveUserId(env, args[0]);
     if (!target) return reply("သုံးပုံ: /add <Telegram ID သို့မဟုတ် @username>\nUsername ကိုရှာရန် အဲဒီ user က bot ကို အရင် message ပို့ထားရပါမယ်။");
     await env.DB.prepare("INSERT OR REPLACE INTO bot_admins(user_id,username,added_by,created_at) VALUES(?,?,?,?)").bind(target, String(args[0] || "").replace(/^@/, ""), message.from.id, Math.floor(Date.now() / 1000)).run();
@@ -2291,7 +2322,7 @@ Group ထဲမှာတော့ catalog ထဲက စာရေးသူ/စာ
     return catalogPage(env, chatId, "books", 0, cleanup);
   }
   if (command === "/stats") {
-    const rows = await env.DB.prepare("SELECT chat_id,author,title,link,raw_text FROM books").all();
+    const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books").all();
     const catalogRows = (rows.results || []).filter((row) => !isReviewRecord(row));
     const aliases = await loadAuthorAliasData(env);
     const authors = new Set(catalogRows.map((row) => authorIdentity(row.author, aliases).key).filter((key) => key !== "raw:"));
