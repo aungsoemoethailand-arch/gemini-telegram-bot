@@ -7,3 +7,5 @@ cloudflare-worker/.wrangler/
 .DS_Store
 
 cloudflare-worker/node_modules/
+
+backups/

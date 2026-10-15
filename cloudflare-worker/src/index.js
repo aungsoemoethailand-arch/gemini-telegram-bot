@@ -582,7 +582,9 @@ function isReviewRecord(row) {
   const metadata = [author, title, link].filter(Boolean).join(" - ");
   const hasReviewTag = /#(?:bookreview|review|စာအုပ်အညွှန်း)\b/i.test(raw);
   const hasReviewBody = raw.length > metadata.length + 80;
-  return String(row?.chat_id || "") === "-2000000001" || hasReviewTag || hasReviewBody;
+  const missingBookMetadata = !author.trim() || !title.trim();
+  const knownNonBookRecord = /စာအုပ်\s*မရှိပါ|wow\s*reader|android\s*epub\s*app|reviews\.pages\.dev/iu.test(`${author} ${title} ${link}`);
+  return String(row?.chat_id || "") === "-2000000001" || hasReviewTag || hasReviewBody || missingBookMetadata || knownNonBookRecord;
 }
 
 async function telegram(env, method, body) {
