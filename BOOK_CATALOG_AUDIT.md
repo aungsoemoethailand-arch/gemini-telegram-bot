@@ -1,21 +1,14 @@
-# Book Catalog Audit — 2026-10-15
+# Book Catalog Audit — 2026-10-15 (updated)
 
-- Total records: **614**
-- Records without category: **25**
-- Real uncategorized book candidates: **9**
-- Hidden non-book/incomplete records: **16**
-- Backup: `backups/gemini-telegram-catalog-2026-10-15.sql`
+- Total records after requested deletion: **613**
+- Records without category: **16**
+- Real uncategorized book candidates: **0**
+- Incomplete/non-book records hidden from search/category: **16**
+- Backup before deletion: `backups/gemini-telegram-catalog-2026-10-15.sql`
 
-## Real books still needing a category
-- D1 `331` — ပုဂံမြို့သူ — မောင်သိန်းဆိုင်
-- D1 `357` — အနုပဋိလောမ ရုပ်ဝါဒ — မြသန်းတင့်
-- D1 `389` — ကျီးမနိုးပွဲ — ရန်ကုန်ဘဆွေ
-- D1 `433` — အမှောင်ကြားက မြန်မာပြည် — ဝင်းတင့်ထွန်း
-- D1 `475` — A Spark of Curiosity — သာထက်အောင်
-- D1 `483` — ဒွန်ကီဟိုတေး — သီမင်းခိုင်
-- D1 `550` — တကယ်မရှိသောနှစ်များ — အောင်ခင်မြင့်
-- D1 `556` — ရိုမန်းဘော့ထ် တွေရဲ့ ကမ္ဘာ — အောင်ရင်ငြိမ်း
-- D1 `586` — ရီရီစိုးနှင့် နှစ်ပေါင်း ၄၀ — အဘ
+## Completed user request
+- Deleted D1 `586` — ရီရီစိုးနှင့် နှစ်ပေါင်း ၄၀ — အဘ
+- Set D1 `331, 357, 389, 433, 475, 483, 550, 556` to category `ရသ`
 
 ## Hidden from search/category (not deleted)
 - D1 `597` — (no title) — (no author)
@@ -36,4 +29,4 @@
 - D1 `623` — reviews.pages.dev/32 — https://wow
 
 ## Duplicate audit
-- No exact normalized author + title duplicate groups were found in the current 614 records.
+- No exact normalized author + title duplicate groups were found in the previous 614-record audit.
