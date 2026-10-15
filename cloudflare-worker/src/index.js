@@ -105,7 +105,9 @@ function normalizeMyanmarInput(value) {
   // Common keyboard spelling/order variants for Myanmar combining marks.
   text = text
     .replace(/\u103a\u1037/gu, "\u1037\u103a")
-    .replace(/\u1037\u1038/gu, "\u1038\u1037");
+    .replace(/\u1037\u1038/gu, "\u1038\u1037")
+    // Keyboard variants can encode ဇော် as ဇေါ် (ါ vs ာ).
+    .replace(/\u102b\u103a/gu, "\u102c\u103a");
   return text;
 }
 
