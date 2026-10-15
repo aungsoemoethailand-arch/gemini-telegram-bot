@@ -1684,6 +1684,38 @@ async function catalogPage(env, chatId, kind, page, cleanup = {}, editMessageId 
   return editMessageId ? editMessage(env, chatId, editMessageId, lines.join("\n"), payload) : sendMessage(env, chatId, lines.join("\n"), payload);
 }
 
+async function categoryPage(env, chatId, cleanup = {}) {
+  const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books").all();
+  const counts = new Map();
+  let total = 0;
+  for (const row of rows.results || []) {
+    if (isReviewRecord(row)) continue;
+    total += 1;
+    const display = String(row.category || "").trim() || "အမျိုးအစား မသတ်မှတ်ရသေး";
+    const key = normalize(display);
+    const item = counts.get(key) || { display, count: 0 };
+    item.count += 1;
+    counts.set(key, item);
+  }
+  const items = [...counts.values()].sort((a, b) => b.count - a.count || a.display.localeCompare(b.display));
+  const max = Math.max(1, ...items.map((item) => item.count));
+  const updated = new Date().toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
+  const lines = [
+    `<b>🏷️ စာအုပ်အမျိုးအစား စာရင်း</b>`,
+    `📚 စာအုပ်စုစုပေါင်း — <b>${total}</b> အုပ်`,
+    `📂 အမျိုးအစားစုစုပေါင်း — <b>${items.length}</b> မျိုး`,
+    `🕒 နောက်ဆုံး update — <code>${updated}</code>`,
+    ``,
+    `<b>အမျိုးအစားအလိုက် အရေအတွက်</b>`,
+  ];
+  items.forEach((item, index) => {
+    const bar = "▮".repeat(Math.max(1, Math.round((item.count / max) * 8)));
+    lines.push(`${index + 1}. <b>${escapeHtml(item.display)}</b> — <b>${item.count}</b> အုပ် <code>${bar}</code>`);
+  });
+  lines.push(``, `ရှာရန် — <code>/search ရသ</code> သို့မဟုတ် category နာမည်ကို တိုက်ရိုက်ပို့ပါ။`);
+  return sendMessage(env, chatId, lines.join("\n"), cleanup);
+}
+
 async function sendReviews(env, chatId, query, reviews, cleanup = {}) {
   if (!reviews.length) return sendMessage(env, chatId, "ဒီစာအုပ်အတွက် review မတွေ့ပါ။", cleanup);
   const lines = [`<b>📖 မူရင်းအညွှန်း (${reviews.length} ခု)</b>`];
@@ -2170,6 +2202,7 @@ async function handleCommand(env, message) {
 စာရေးသူ/စာအုပ်နာမည်ကို တိုက်ရိုက်ပို့ပြီးလည်း ရှာနိုင်ပါတယ်။
 <code>/authors</code> — စာရေးသူစာရင်း
 <code>/books</code> — စာအုပ်စာရင်း
+<code>/category</code> — စာအုပ်အမျိုးအစားအလိုက် အရေအတွက်
 <code>/stats</code> — catalog အခြေအနေ
 
 <b>💾 Offline အမေးအဖြေ (FAQ)</b>
@@ -2349,6 +2382,9 @@ Group ထဲမှာတော့ catalog ထဲက စာရေးသူ/စာ
   }
   if (command === "/books") {
     return catalogPage(env, chatId, "books", 0, cleanup);
+  }
+  if (command === "/category" || command === "/categories") {
+    return categoryPage(env, chatId, cleanup);
   }
   if (command === "/stats") {
     const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books").all();
