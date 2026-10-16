@@ -1389,7 +1389,7 @@ async function searchBooks(env, query) {
   if (!bookRowsCache || now - bookRowsCacheAt > 30000) {
     const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
     bookRowsCache = rows.results || [];
-    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), title: normalize(row.title), category: normalize(row.category), isReview: isReviewRecord(row) }));
+    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), authorCore: normalize(String(row.author || "").replace(/\([^)]*\)/gu, " ")), title: normalize(row.title), category: normalize(row.category), isReview: isReviewRecord(row) }));
     bookRowsCacheAt = now;
   }
   const needle = normalize(query);
@@ -1401,7 +1401,7 @@ async function searchBooks(env, query) {
     if (entry.isReview) return false;
     const combined = `${entry.author}${entry.title}${entry.category}`;
     const authorGroup = aliases.byKey.get(entry.author)?.group_id || "";
-    return entry.author.includes(needle) || entry.title.includes(needle) || entry.category.includes(needle) || (categoryNeedle && entry.category === categoryNeedle) || (queryGroup && authorGroup === queryGroup) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
+    return entry.author.includes(needle) || entry.authorCore.includes(needle) || entry.title.includes(needle) || entry.category.includes(needle) || (categoryNeedle && entry.category === categoryNeedle) || (queryGroup && authorGroup === queryGroup) || (parts.length > 1 && parts.every((part) => combined.includes(part)));
   }).map((entry) => entry.row).slice(0, MAX_BOOK_RESULTS);
 }
 
@@ -1440,7 +1440,7 @@ async function findClosestBooks(env, query, limit = 3) {
   if (!bookRowsCache || now - bookRowsCacheAt > 30000) {
     const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
     bookRowsCache = rows.results || [];
-    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), title: normalize(row.title), category: normalize(row.category), isReview: isReviewRecord(row) }));
+    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), authorCore: normalize(String(row.author || "").replace(/\([^)]*\)/gu, " ")), title: normalize(row.title), category: normalize(row.category), isReview: isReviewRecord(row) }));
     bookRowsCacheAt = now;
   }
   const needle = normalize(query);
@@ -1449,7 +1449,7 @@ async function findClosestBooks(env, query, limit = 3) {
     .filter((entry) => !entry.isReview && entry.title && entry.author)
     .map((entry) => {
       const titleScore = similarityScore(needle, entry.title);
-      const authorScore = similarityScore(needle, entry.author);
+      const authorScore = Math.max(similarityScore(needle, entry.author), similarityScore(needle, entry.authorCore));
       const score = Math.max(titleScore, authorScore * 0.96);
       return { row: entry.row, score, titleScore, authorScore };
     })
@@ -1540,7 +1540,7 @@ async function searchExactBook(env, query) {
   if (!bookRowsCache || now - bookRowsCacheAt > 30000) {
     const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
     bookRowsCache = rows.results || [];
-    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), title: normalize(row.title), category: normalize(row.category), isReview: isReviewRecord(row) }));
+    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), authorCore: normalize(String(row.author || "").replace(/\([^)]*\)/gu, " ")), title: normalize(row.title), category: normalize(row.category), isReview: isReviewRecord(row) }));
     bookRowsCacheAt = now;
   }
   const aliases = await loadAuthorAliasData(env);
@@ -1548,7 +1548,7 @@ async function searchExactBook(env, query) {
   return bookSearchEntriesCache.filter((entry) => {
     if (entry.isReview) return false;
     const authorGroup = aliases.byKey.get(entry.author)?.group_id || "";
-    return entry.author === needle || entry.title === needle || entry.category === needle || (categoryNeedle && entry.category === categoryNeedle) || (queryGroup && authorGroup === queryGroup);
+    return entry.author === needle || entry.authorCore === needle || entry.title === needle || entry.category === needle || (categoryNeedle && entry.category === categoryNeedle) || (queryGroup && authorGroup === queryGroup);
   }).map((entry) => entry.row).slice(0, MAX_BOOK_RESULTS);
 }
 
