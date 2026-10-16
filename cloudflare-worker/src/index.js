@@ -1405,6 +1405,76 @@ async function searchBooks(env, query) {
   }).map((entry) => entry.row).slice(0, MAX_BOOK_RESULTS);
 }
 
+function editDistance(left, right) {
+  const a = [...String(left || "")];
+  const b = [...String(right || "")];
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      current[j] = Math.min(
+        current[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+function similarityScore(left, right) {
+  const a = normalize(left);
+  const b = normalize(right);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) return 0.94;
+  const distance = editDistance(a, b);
+  return 1 - (distance / Math.max(a.length, b.length));
+}
+
+async function findClosestBooks(env, query, limit = 3) {
+  const now = Date.now();
+  if (!bookRowsCache || now - bookRowsCacheAt > 30000) {
+    const rows = await env.DB.prepare("SELECT chat_id,author,title,category,link,raw_text FROM books ORDER BY id DESC LIMIT 2000").all();
+    bookRowsCache = rows.results || [];
+    bookSearchEntriesCache = bookRowsCache.map((row) => ({ row, author: normalize(row.author), title: normalize(row.title), category: normalize(row.category), isReview: isReviewRecord(row) }));
+    bookRowsCacheAt = now;
+  }
+  const needle = normalize(query);
+  if (needle.length < 3) return [];
+  return bookSearchEntriesCache
+    .filter((entry) => !entry.isReview && entry.title && entry.author)
+    .map((entry) => {
+      const titleScore = similarityScore(needle, entry.title);
+      const authorScore = similarityScore(needle, entry.author);
+      const score = Math.max(titleScore, authorScore * 0.96);
+      return { row: entry.row, score, titleScore, authorScore };
+    })
+    .filter((item) => item.score >= (needle.length >= 8 ? 0.54 : 0.68))
+    .sort((a, b) => b.score - a.score)
+    .filter((item, index, all) => index === all.findIndex((candidate) => normalize(candidate.row.title) === normalize(item.row.title) && normalize(candidate.row.author) === normalize(item.row.author)))
+    .slice(0, limit)
+    .map((item) => item.row);
+}
+
+async function sendFuzzySuggestion(env, chatId, query, cleanup = {}, mention = "") {
+  const suggestions = await findClosestBooks(env, query);
+  if (!suggestions.length) return null;
+  const token = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+  const stored = JSON.stringify({ kind: "fuzzy", query: String(query || ""), suggestions: suggestions.slice(0, 3) });
+  searchSessionCache.set(token, stored);
+  if (searchSessionCache.size > 500) searchSessionCache.delete(searchSessionCache.keys().next().value);
+  env.DB.prepare("INSERT OR REPLACE INTO search_sessions(token,query,created_at) VALUES(?,?,?)")
+    .bind(token, stored, Math.floor(Date.now() / 1000)).run().catch((error) => console.log("Fuzzy search session persistence skipped", error?.message || "unknown error"));
+  const lines = [`🔎 <b>${escapeHtml(query)}</b> နဲ့ အနီးစပ်ဆုံးတွေ့တာရှိပါတယ်ရှင်။`, "", ...suggestions.map((row, index) => `📖 <b>${index + 1}. ${escapeHtml(row.title || "စာအုပ်")}</b>${row.author ? ` — ${escapeHtml(row.author)}` : ""}`), "", "ဒီစာအုပ်တွေထဲက မေးထားတာ ဟုတ်ပါသလားရှင်?"];
+  const buttons = suggestions.map((row, index) => [{ text: `✅ ${index + 1}. ဒီစာအုပ်ပါ`, callback_data: `fuzzy:yes:${token}:${index}` }]);
+  buttons.push([{ text: "❌ မဟုတ်ပါ — ပြန်ရေးမယ်", callback_data: `fuzzy:no:${token}` }]);
+  return sendMessage(env, chatId, `${mention ? `${mention} ရေ၊ ` : ""}${lines.join("\n")}`, { ...cleanup, reply_markup: { inline_keyboard: buttons } });
+}
+
 async function handleInlineQuery(env, inlineQuery) {
   const inlineQueryId = String(inlineQuery?.id || "");
   if (!inlineQueryId) return;
@@ -1612,6 +1682,8 @@ async function sendSearchPage(env, chatId, query, page, cleanup = {}, exact = fa
   const rows = prefetchedRows || (exact ? await searchExactBook(env, query) : await searchBooks(env, query));
   if (!rows.length) {
     const name = `<b>${escapeHtml(query)}</b>`;
+    const fuzzy = await sendFuzzySuggestion(env, chatId, query, cleanup, mention);
+    if (fuzzy) return fuzzy;
     return sendMessage(env, chatId, `${mention ? `${mention} ရေ၊ ` : ""}${name} — ${nextNoResult(chatId)}`, cleanup);
   }
   const pageSize = 10;
@@ -2481,6 +2553,21 @@ async function handleCallback(env, query) {
   if (action === "help_stats") return handleCommand(env, { chat: message.chat, text: "/stats" });
   const secretaryMatch = String(action || "").match(/^secretary:(approve|reject):([a-f0-9]+)$/);
   if (secretaryMatch) return handleSecretaryCallback(env, query, secretaryMatch[2], secretaryMatch[1]);
+  const fuzzyMatch = String(action || "").match(/^fuzzy:(yes|no):([a-z0-9]+)(?::(\d+))?$/);
+  if (fuzzyMatch) {
+    const [, choice, token, indexText] = fuzzyMatch;
+    const cached = searchSessionCache.get(token);
+    const session = cached ? { query: cached } : await env.DB.prepare("SELECT query FROM search_sessions WHERE token=? AND created_at>? ").bind(token, Math.floor(Date.now() / 1000) - 86400).first();
+    if (!session) return editMessage(env, message.chat.id, message.message_id, "ဒီအနီးစပ်ဆုံးရှာဖွေမှု button သက်တမ်းကုန်သွားပါပြီရှင်။ စာအုပ်နာမည်ကို ပြန်ရေးရှာပေးပါနော်။");
+    let parsed;
+    try { parsed = JSON.parse(String(session.query || "")); } catch { parsed = null; }
+    if (!parsed || parsed.kind !== "fuzzy") return editMessage(env, message.chat.id, message.message_id, "ဒီရှာဖွေမှု button သက်တမ်းကုန်သွားပါပြီရှင်။");
+    if (choice === "no") return editMessage(env, message.chat.id, message.message_id, "ဟုတ်ကဲ့ပါရှင်။ စာအုပ်နာမည်ကို စာလုံးပေါင်းသေချာအောင် ပြန်ရေးပြီး ထပ်ရှာပေးပါနော်။");
+    const row = parsed.suggestions?.[Number(indexText)];
+    if (!row) return editMessage(env, message.chat.id, message.message_id, "ဒီစာအုပ်ရွေးချယ်မှုကို မတွေ့တော့ပါဘူးရှင်။ ပြန်ရှာပေးပါနော်။");
+    await editMessage(env, message.chat.id, message.message_id, `✅ <b>${escapeHtml(row.title || "စာအုပ်")}</b> ကို ရွေးထားပါတယ်ရှင်။`);
+    return sendSearch(env, message.chat.id, parsed.query, {}, false, { user: query.from, chatType: message.chat?.type }, [row]);
+  }
   const deleteMatch = String(action || "").match(/^delete:(yes|no|pick):([a-z0-9]+)$/);
   if (deleteMatch) {
     const [, choice, token] = deleteMatch;
