@@ -1469,8 +1469,8 @@ async function sendFuzzySuggestion(env, chatId, query, cleanup = {}, mention = "
   if (searchSessionCache.size > 500) searchSessionCache.delete(searchSessionCache.keys().next().value);
   env.DB.prepare("INSERT OR REPLACE INTO search_sessions(token,query,created_at) VALUES(?,?,?)")
     .bind(token, stored, Math.floor(Date.now() / 1000)).run().catch((error) => console.log("Fuzzy search session persistence skipped", error?.message || "unknown error"));
-  const lines = [`🔎 <b>${escapeHtml(query)}</b> နဲ့ အနီးစပ်ဆုံးတွေ့တာရှိပါတယ်ရှင်။`, "", ...suggestions.map((row, index) => `📖 <b>${index + 1}. ${escapeHtml(row.title || "စာအုပ်")}</b>${row.author ? ` — ${escapeHtml(row.author)}` : ""}`), "", "ဒီစာအုပ်တွေထဲက မေးထားတာ ဟုတ်ပါသလားရှင်?"];
-  const buttons = suggestions.map((row, index) => [{ text: `✅ ${index + 1}. ဟုတ်တယ်၊ ဒီအုပ်ပါ`, callback_data: `fuzzy:yes:${token}:${index}` }]);
+  const lines = [`🔎 <b>${escapeHtml(query)}</b> နဲ့ အနီးစပ်ဆုံးတွေ့တာရှိပါတယ်ရှင်။`, "", ...suggestions.map((row, index) => `📖 <b>${index + 1}. ${escapeHtml(row.title || "စာအုပ်")} - ${escapeHtml(row.author || "စာရေးသူမသိ")}</b>`), "", "အနီးစပ်ဆုံးစာအုပ်ကို ရွေးပေးပါရှင်။"];
+  const buttons = suggestions.map((row, index) => [{ text: `${index + 1}. ${`${row.title || "စာအုပ်"} - ${row.author || "စာရေးသူမသိ"}`.slice(0, 58)}`, callback_data: `fuzzy:yes:${token}:${index}` }]);
   buttons.push([{ text: "❌ မဟုတ်ဘူး၊ ပြန်ရှာမယ်", callback_data: `fuzzy:no:${token}` }]);
   return sendMessage(env, chatId, `${mention ? `${mention} ရေ၊ ` : ""}${lines.join("\n")}`, { ...cleanup, reply_markup: { inline_keyboard: buttons } });
 }
