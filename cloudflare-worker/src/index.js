@@ -2566,7 +2566,7 @@ async function handleCallback(env, query) {
     const row = parsed.suggestions?.[Number(indexText)];
     if (!row) return editMessage(env, message.chat.id, message.message_id, "ဒီစာအုပ်ရွေးချယ်မှုကို မတွေ့တော့ပါဘူးရှင်။ ပြန်ရှာပေးပါနော်။");
     await editMessage(env, message.chat.id, message.message_id, `✅ <b>${escapeHtml(row.title || "စာအုပ်")}</b> ကို ရွေးထားပါတယ်ရှင်။`);
-    return sendSearch(env, message.chat.id, parsed.query, {}, false, { user: query.from, chatType: message.chat?.type }, [row]);
+    return sendSearch(env, message.chat.id, parsed.query, directMessageExtra(message), false, { user: query.from, chatType: message.chat?.type }, [row]);
   }
   const deleteMatch = String(action || "").match(/^delete:(yes|no|pick):([a-z0-9]+)$/);
   if (deleteMatch) {
