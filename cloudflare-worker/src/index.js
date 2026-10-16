@@ -260,11 +260,11 @@ function extractEpubRecord(post) {
   return { author, title, category, link: channelPostLink(post.chat, post.message_id) };
 }
 function isGroupMessage(message) {
-  return ["group", "supergroup"].includes(message?.chat?.type);
+  return !message?.chat?.is_direct_messages && ["group", "supergroup"].includes(message?.chat?.type);
 }
 
 function isGroupChat(chat) {
-  return ["group", "supergroup"].includes(chat?.type);
+  return !chat?.is_direct_messages && ["group", "supergroup"].includes(chat?.type);
 }
 function directMessageExtra(message) {
   const topicId = message?.direct_messages_topic_id ?? message?.direct_messages_topic?.topic_id ?? message?.message_thread_id;
@@ -2504,7 +2504,7 @@ async function handleMessage(env, message) {
   }
   if (!message?.chat?.is_direct_messages) await Promise.all([rememberChat(env, message.chat), rememberUser(env, message.from)]);
   if (text.startsWith("/")) return handleCommand(env, message);
-  const isGroup = ["group", "supergroup"].includes(message.chat?.type);
+  const isGroup = !message?.chat?.is_direct_messages && ["group", "supergroup"].includes(message.chat?.type);
   if (isGroup && await autoBanForeignScriptMessage(env, message)) return;
   const replyTarget = message.reply_to_message;
   let botMentioned = false;
